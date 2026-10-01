@@ -59,3 +59,7 @@ purposes. Outputs go to `research/`, which is gitignored. Don't publish them.
 
 This is a research prototype from a hackathon project: CLI scripts and analysis code, not a hosted
 service.
+
+## License
+
+MIT for the code. Keepa data you collect with it stays under Keepa's terms.
