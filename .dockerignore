@@ -1,0 +1,11 @@
+.env
+.env.*
+!.env.example
+.fiftyoff/
+.git/
+.venv/
+research/
+site/
+**/__pycache__/
+.pytest_cache/
+.DS_Store

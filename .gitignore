@@ -1,0 +1,40 @@
+# Secrets — KEEPA_API_KEY lives in .env, never committed
+.env
+.env.*
+!.env.example
+
+# Gate state (§7): approval must be granted locally by the user, never inherited via clone
+.fiftyoff/
+research-approval.json
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Node (post-gate stack)
+node_modules/
+.next/
+dist/
+*.tsbuildinfo
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
+
+# Raw Keepa responses stay local (size + Keepa redistribution terms). Back up separately.
+research/raw/
+research/fixture-run/
+research/collector/raw/
+research/collector/sweeps.jsonl
+research/collector/checks.jsonl
+research/track1/history.log
+research/collector/run.log
+
+# Public repo: never commit Keepa-derived data (Keepa terms §18(7)). Outputs stay local.
+research/*
+!research/.gitkeep

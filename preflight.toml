@@ -1,0 +1,117 @@
+# Pre-flight configuration. Changing a value here changes what gets spent — see docs/DECISIONS.md.
+
+[budget]
+# D2: hard cap on total tokens the whole pre-flight may spend (summed from research/token-ledger.jsonl).
+# Base plan = 20 tokens/min -> bucket max 1,200, ~28,800/day. 600 fits in one bucket.
+token_cap = 5000                 # D16: raised from 600 for Track 1 (user-approved)
+
+[census]
+date_range = 0            # 0 = last 24h, 1 = week, 2 = month, 3 = 90 days
+max_pages = 40            # refuse any census command planning more pages than this (5 tokens each)
+
+# Count queries cost 5 tokens each and return totals per root category (Keepa's nominal discount,
+# = vs the 48h marketplace-New average). Sample queries return rows we re-price strictly.
+# Prices are Warehouse (Resale) prices in cents. Names must not contain "-p<digit>".
+[[census.queries]]
+name = "n25"
+mode = "counts"
+min_delta = 25
+[[census.queries]]
+name = "n40"
+mode = "counts"
+min_delta = 40
+[[census.queries]]
+name = "n50"
+mode = "counts"
+min_delta = 50
+[[census.queries]]
+name = "n60"
+mode = "counts"
+min_delta = 60
+[[census.queries]]
+name = "n70"
+mode = "counts"
+min_delta = 70
+[[census.queries]]
+name = "n50-min20"
+mode = "counts"
+min_delta = 50
+min_price = 2000
+[[census.queries]]
+name = "n50-min50"
+mode = "counts"
+min_delta = 50
+min_price = 5000
+[[census.queries]]
+name = "n50-min125"
+mode = "counts"
+min_delta = 50
+min_price = 12500
+[[census.queries]]
+name = "n50-min250"
+mode = "counts"
+min_delta = 50
+min_price = 25000
+[[census.queries]]
+name = "n50-min20-lnvg"      # Like New + Very Good only (codes 2/3 agree across the docs)
+mode = "counts"
+min_delta = 50
+min_price = 2000
+warehouse_conditions = [2, 3]
+[[census.queries]]
+name = "n50-min20-single"    # one variation per parent: PF25/26 at market scale
+mode = "counts"
+min_delta = 50
+min_price = 2000
+single_variation = true
+[[census.queries]]
+name = "n50-min20-week"      # week vs day window: turnover hint (RQ2)
+mode = "counts"
+min_delta = 50
+min_price = 2000
+date_range = 1
+
+# "Best deals now": the nominal-50%+ pool with media excluded and a $20 Resale-price floor,
+# pulled newest-first (Keepa's percent sort surfaces bogus reference prices first).
+[[census.queries]]
+name = "pool50"
+mode = "sample"
+pages = 12
+min_delta = 50
+min_price = 2000
+exclude_media = true
+sort = 1
+
+[history]
+target_sample = 15
+max_per_category = 3         # keep the best-deal sample spread across categories
+min_reference_cents = 10000  # D13: best deals on items with a $100+ strict reference
+offers = 20                  # offers per product request; worst case 2 pages x 6 tokens
+days = 180                   # analysis window
+fetch_days = 200             # fetched history (free): margin so window-edge episodes keep context
+
+[analysis]
+thresholds = [0.30, 0.40, 0.50, 0.60]
+
+[track1]
+# D16: Resale presence on popular products (the extension question). Not filtered by discount.
+min_normal_cents = 10000   # 90-day New average >= $100
+max_rank = 50000           # sales rank in root category
+per_category = 100         # rank-stratified sample per category
+offers = 20
+batch_size = 10            # ASINs per /product request
+days = 180
+fetch_days = 200
+
+[collector]
+# D17: Track 2 forward collector. Separate ledger (research/collector/token-ledger.jsonl).
+sweep_minutes = 30
+max_pages = 20              # deal-feed pages per sweep (5 tokens each); target slice is ~16 pages
+min_delta = 50              # Keepa nominal discount floor for the sweep
+min_resale_cents = 5000     # Resale price >= $50 (normal price ~$100+ at 50% off)
+watch_size = 30
+watch_min_ref_cents = 10000
+watch_max_rank = 50000
+check_estimate = 13         # worst case per forced offer check (offers=20 + update=0)
+daily_token_cap = 28000     # raised 2026-09-27 from 25,000: unused tokens expire anyway; avoids a ~3h evening gap
+run_token_cap = 60000       # hard stop for this collector run (~2 days)

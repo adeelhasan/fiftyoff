@@ -1,0 +1,43 @@
+# Local stack, identical on the VPS.
+#   docker compose up -d                                   # Postgres only
+#   docker compose run --rm app                            # tests (network-blocked)
+#   docker compose run --rm app collector.py report        # free, from saved data
+#   docker compose run --rm app collector.py run --dry-run # plan only
+# `app` sits in a profile, so `up` never starts it. Paid runs stay a manual command (CLAUDE.md rule 1).
+
+services:
+  db:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: fiftyoff
+      POSTGRES_DB: fiftyoff
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-fiftyoff-dev}  # local default; the VPS sets its own in .env
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5432:5432"   # localhost only, never public
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fiftyoff -d fiftyoff"]
+      interval: 5s
+      retries: 10
+    restart: unless-stopped
+
+  app:
+    build: .
+    profiles: ["tools"]
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: postgresql://fiftyoff:${POSTGRES_PASSWORD:-fiftyoff-dev}@db:5432/fiftyoff
+    volumes:
+      # Data and gate state live on the host, never inside the image.
+      - ./research:/app/research
+      - ./.fiftyoff:/app/.fiftyoff
+      - ./preflight.toml:/app/preflight.toml:ro
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pgdata:
