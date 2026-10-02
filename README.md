@@ -14,7 +14,14 @@ Resale offer against a **strict reference**: the lowest of Amazon's price, the N
 | `preflight.py` | Budget-capped feasibility probe: deal-feed census, history samples, offline report |
 | `track1.py` | How often popular $100+ products have a Resale offer, and how deep the discount goes |
 | `collector.py` | Forward collector: sweeps the deal feed every 30 min and re-checks a watchlist to time how long each Resale unit lasts |
+| `tracker.py` | New-deal tracker: incremental deal-feed sweeps, priority live checks, unit lifespans with lower/upper bounds and HIGH/MEDIUM/LOW confidence, state in Postgres |
+| `fiftyoff/api.py` | Read-only deal feed API and preview page (FastAPI), served through a database role that can only read the feed |
 | `fiftyoff/` | Keepa client (raw response saved before parsing, token ledger, hard token caps), strict-discount and episode analysis |
+
+How the tracker decides a unit is gone: Amazon often hides a Resale unit for a while and then shows
+it again (the same offer, back within minutes to hours). So a missing unit is first *unconfirmed*,
+counts as *gone* only after 6 hours of continuous absence, and is *revived* if it comes back. Every
+lifespan is reported as a range, never a single precise time.
 
 Design rules the code enforces:
 - Paid Keepa calls happen only from an explicit command, after a printed token estimate and a `[y/N]` prompt.
@@ -37,6 +44,9 @@ cp .env.example .env          # add KEEPA_API_KEY
 docker compose up -d                                    # Postgres 17 (localhost only)
 docker compose run --rm app                             # tests, offline
 docker compose run --rm app collector.py run --dry-run  # plan and token rate, no requests
+docker compose run --rm app tracker.py unlock           # approve a tracker run: token cap + expiry, [y/N]
+docker compose --profile tracker up -d tracker          # long-running tracker
+docker compose up -d api                                # feed API + preview on 127.0.0.1:8000
 ```
 
 **Or with [uv](https://docs.astral.sh/uv/):**

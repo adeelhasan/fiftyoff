@@ -3,7 +3,12 @@
 #   docker compose run --rm app                            # tests (network-blocked)
 #   docker compose run --rm app collector.py report        # free, from saved data
 #   docker compose run --rm app collector.py run --dry-run # plan only
-# `app` sits in a profile, so `up` never starts it. Paid runs stay a manual command (CLAUDE.md rule 1).
+#   docker compose run --rm app tracker.py unlock          # approve a tracker run ([y/N], token cap, expiry)
+#   docker compose --profile tracker up -d tracker         # start the long-running tracker
+#   docker compose up -d api                               # read-only feed API + preview on 127.0.0.1:8000
+#   docker compose --profile preview up -d preview-tunnel  # temporary public HTTPS URL for the preview
+# `app` and `tracker` sit in profiles, so a plain `up` never starts them. The tracker spends nothing
+# without a valid .fiftyoff/tracker-approval.json; it waits instead (CLAUDE.md rules 1-2).
 
 services:
   db:
@@ -24,6 +29,7 @@ services:
 
   app:
     build: .
+    image: fiftyoff:latest
     profiles: ["tools"]
     env_file:
       - path: .env
@@ -38,6 +44,47 @@ services:
     depends_on:
       db:
         condition: service_healthy
+
+  tracker:
+    image: fiftyoff:latest   # same image as app (build it with `docker compose build app`)
+    profiles: ["tracker"]
+    command: ["tracker.py", "run"]
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: postgresql://fiftyoff:${POSTGRES_PASSWORD:-fiftyoff-dev}@db:5432/fiftyoff
+    volumes:
+      - ./research:/app/research
+      - ./.fiftyoff:/app/.fiftyoff:ro
+      - ./preflight.toml:/app/preflight.toml:ro
+    depends_on:
+      db:
+        condition: service_healthy
+
+  api:
+    image: fiftyoff:latest
+    command: ["uvicorn", "fiftyoff.api:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers"]
+    restart: unless-stopped
+    environment:
+      # read-only role: SELECT on the feed view only (created by scripts/feed-reader.sh)
+      FEED_DATABASE_URL: postgresql://feed_reader:${FEED_READER_PASSWORD:-feed-dev}@db:5432/fiftyoff
+      PREVIEW_PASSWORD: ${PREVIEW_PASSWORD:-}   # set -> browser login popup (user "fiftyoff"); empty -> open
+    ports:
+      - "127.0.0.1:8000:8000"   # localhost only; reach it over an SSH tunnel or a Cloudflare Tunnel
+    depends_on:
+      db:
+        condition: service_healthy
+
+  # Temporary public HTTPS address (*.trycloudflare.com) for the preview, no Cloudflare account needed.
+  # The address changes on every restart: find it with `docker compose --profile preview logs preview-tunnel`.
+  preview-tunnel:
+    image: cloudflare/cloudflared:2026.9.1
+    profiles: ["preview"]
+    command: ["tunnel", "--no-autoupdate", "--url", "http://api:8000"]
+    restart: unless-stopped
+    depends_on: [api]
 
 volumes:
   pgdata:

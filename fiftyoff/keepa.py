@@ -6,6 +6,7 @@ Raw is written before the caller sees (and parses) anything, per CLAUDE.md rule 
 
 from __future__ import annotations
 
+import gzip
 import json
 import math
 import os
@@ -158,18 +159,36 @@ class FixtureTransport:
 
 
 class Ledger:
-    """Append-only JSONL record of every Keepa call and its actual token usage."""
+    """Append-only JSONL record of every Keepa call and its actual token usage.
+
+    Reads are incremental: only bytes appended since the last read are parsed, so a weeks-long
+    run doesn't re-parse the whole file on every call. Any writer appending to the file is seen.
+    """
 
     def __init__(self, path: Path):
         self.path = Path(path)
+        self._entries: list[dict] = []
+        self._offset = 0
 
     def entries(self) -> list[dict]:
         if not self.path.exists():
+            self._entries, self._offset = [], 0
             return []
-        return [json.loads(line) for line in self.path.read_text().splitlines() if line.strip()]
+        size = self.path.stat().st_size
+        if size < self._offset:  # truncated or replaced: start over
+            self._entries, self._offset = [], 0
+        if size > self._offset:
+            with self.path.open("rb") as f:
+                f.seek(self._offset)
+                chunk = f.read(size - self._offset)
+            end = chunk.rfind(b"\n") + 1  # leave a half-written last line for the next read
+            self._entries += [json.loads(x) for x in chunk[:end].decode().splitlines() if x.strip()]
+            self._offset += end
+        return list(self._entries)
 
-    def spent(self) -> int:
-        return sum(e.get("tokensConsumed") or 0 for e in self.entries())
+    def spent(self, since: str | None = None) -> int:
+        """Tokens consumed, optionally only by entries at or after the ISO timestamp `since`."""
+        return sum(e.get("tokensConsumed") or 0 for e in self.entries() if since is None or e["at"] >= since)
 
     def record(self, entry: dict) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -179,8 +198,10 @@ class Ledger:
 
 class Keepa:
     def __init__(self, transport: Transport, ledger: Ledger, raw_dir: Path, token_cap: int,
-                 sleep=time.sleep):
+                 sleep=time.sleep, raw_gzip: bool = False, cap_since: str | None = None):
         self.transport = transport
+        self.raw_gzip = raw_gzip  # long runs: ~10x smaller raw archive
+        self.cap_since = cap_since  # count token_cap from this ISO time (a run's approval), not all-time
         self.ledger = ledger
         self.raw_dir = Path(raw_dir)
         self.token_cap = token_cap
@@ -190,7 +211,7 @@ class Keepa:
         self._seq = 0
 
     def remaining_budget(self) -> int:
-        return self.token_cap - self.ledger.spent()
+        return self.token_cap - self.ledger.spent(self.cap_since)
 
     def call(self, endpoint: str, *, label: str, estimate: int, params: dict | None = None,
              body: dict | None = None) -> dict:
@@ -209,12 +230,18 @@ class Keepa:
         # Raw first — before anything inspects the payload.
         self._seq += 1
         self.raw_dir.mkdir(parents=True, exist_ok=True)
-        raw_path = self.raw_dir / f"{self._seq:03d}-{label}.json"
-        raw_path.write_text(json.dumps({
+        raw = json.dumps({
             "request": {"endpoint": endpoint, "params": params, "body": body, "sentAt": sent_at},
             "status": status,
             "response": data,
-        }))
+        })
+        if self.raw_gzip:
+            raw_path = self.raw_dir / f"{self._seq:06d}-{label}.json.gz"
+            with gzip.open(raw_path, "wt") as f:
+                f.write(raw)
+        else:
+            raw_path = self.raw_dir / f"{self._seq:03d}-{label}.json"
+            raw_path.write_text(raw)
 
         self.tokens_left = data.get("tokensLeft", self.tokens_left)
         self.refill_rate = data.get("refillRate", self.refill_rate)

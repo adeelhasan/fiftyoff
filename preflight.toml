@@ -115,3 +115,19 @@ watch_max_rank = 50000
 check_estimate = 13         # worst case per forced offer check (offers=20 + update=0)
 daily_token_cap = 28000     # raised 2026-09-27 from 25,000: unused tokens expire anyway; avoids a ~3h evening gap
 run_token_cap = 60000       # hard stop for this collector run (~2 days)
+
+[tracker]
+# D20: new-deal tracker. Separate ledger (research/tracker/token-ledger.jsonl); the run's token cap and
+# expiry come from .fiftyoff/tracker-approval.json (tracker.py unlock), not from here.
+sweep_minutes = 30
+full_sweep_hours = 12
+max_pages = 20                  # incremental sweeps (usually stop after 1-2 pages)
+full_sweep_max_pages = 100      # full sweeps reach old listings whose reference rose (~0.7 tokens/min)
+sweep_min_delta = 30            # Keepa nominal floor for the feed query; strict tiers below decide
+sweep_min_resale_cents = 2000
+tiers = [[0.40, 10000], [0.30, 20000]]   # strict >= 40% with $100+ reference, or >= 30% with $200+
+max_rank = 50000
+check_estimate = 7              # observed per check in D17 (13 = two offer pages, worst case)
+fast_minutes = 15               # new watch or unit (<6 h)
+unconfirmed_minutes = 30        # a unit missing from the last check
+slow_minutes = 60
