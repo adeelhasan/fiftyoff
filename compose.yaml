@@ -6,7 +6,8 @@
 #   docker compose run --rm app tracker.py unlock          # approve a tracker run ([y/N], token cap, expiry)
 #   docker compose --profile tracker up -d tracker         # start the long-running tracker
 #   docker compose up -d api                               # read-only feed API + preview on 127.0.0.1:8000
-#   docker compose --profile preview up -d preview-tunnel  # temporary public HTTPS URL for the preview
+#   docker compose up -d tunnel                            # https://preview.fiftyoff.app (named Cloudflare tunnel)
+#   docker compose --profile preview up -d preview-tunnel  # old temporary *.trycloudflare.com URL (retired)
 # `app` and `tracker` sit in profiles, so a plain `up` never starts them. The tracker spends nothing
 # without a valid .fiftyoff/tracker-approval.json; it waits instead (CLAUDE.md rules 1-2).
 
@@ -76,6 +77,18 @@ services:
     depends_on:
       db:
         condition: service_healthy
+
+  # Stable public HTTPS: Cloudflare named tunnel "fiftyoff" -> api (preview.fiftyoff.app, D25).
+  # Credentials live in ./.cloudflared on the server only (gitignored); CF_TUNNEL_ID comes from .env.
+  # The api keeps its login popup; DNS routes are added with `cloudflared tunnel route dns`.
+  tunnel:
+    image: cloudflare/cloudflared:2026.9.3
+    command: ["tunnel", "--no-autoupdate", "--credentials-file", "/home/nonroot/.cloudflared/${CF_TUNNEL_ID}.json",
+              "run", "--url", "http://api:8000", "${CF_TUNNEL_ID}"]
+    volumes:
+      - ./.cloudflared:/home/nonroot/.cloudflared:ro
+    restart: unless-stopped
+    depends_on: [api]
 
   # Temporary public HTTPS address (*.trycloudflare.com) for the preview, no Cloudflare account needed.
   # The address changes on every restart: find it with `docker compose --profile preview logs preview-tunnel`.

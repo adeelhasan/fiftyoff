@@ -258,3 +258,75 @@ def test_unlock_works_with_a_spent_ledger(tmp_path, monkeypatch):
     assert cli.cmd_unlock(args, cfg, input_fn=lambda _: "y") == 0
     a = json.loads((tmp_path / ".fiftyoff/tracker-approval.json").read_text())
     assert a["approvedByUser"] and a["tokenCap"] == 14 * 28_800
+
+
+def test_product_signals_and_score():
+    from fiftyoff.score import image_url, score
+    from fiftyoff.tracker import product_signals
+    p = {"brand": "Acme", "categoryTree": [{"name": "Tools"}, {"name": "Drills"}], "monthlySold": 0,
+         "availabilityAmazon": -1, "csv": [None] * 16 + [[100, 44, 200, 46], [100, 900, 200, 1200]],
+         "stats": {"salesRankDrops30": 12, "salesRankDrops90": -1, "current": [-1, 9999, -1, 5300]}}
+    s = product_signals(p)
+    assert s == {"brand": "Acme", "cat_path": ["Tools", "Drills"], "reviews": 1200, "rating": 4.6, "drops30": 12,
+                 "drops90": None, "monthly_sold": None, "amazon_sells": False, "rank": 5300}
+    assert product_signals({})["reviews"] is None  # later checks without history must not erase reviews
+    mem = MemoryStore()
+    mem.save_product(0, "B0X", s)
+    mem.save_product(1, "B0X", {**s, "reviews": None, "drops30": 20})
+    assert mem.products["B0X"]["reviews"] == 1200 and mem.products["B0X"]["drops30"] == 20
+    base = {"strict": 0.55, "cond": "Used - Like New", "resale_cents": 9000, "ref_cents": 20000, **s}
+    assert score(base) > score({**base, "cond": "Used - Acceptable"})
+    assert score(base) > score({**base, "reviews": 3, "drops30": 0})
+    assert score({**base, "strict": 0.70}) > score(base)
+    assert image_url([52, 49, 46, 106, 112, 103]) == "https://m.media-amazon.com/images/I/41.jpg"
+    assert image_url("{52,49,46,106,112,103}") == image_url([52, 49, 46, 106, 112, 103])
+    assert image_url("../evil") is None and image_url(None) is None
+
+
+def test_failed_check_is_retried_soon_and_does_not_count_as_qualifying(rig):
+    clock, script, store, tr, _ = rig
+    script.pages = [[deal("A", 9000, 20000, unix_to_keepa(T0))]]
+    tr.sweep()
+    tr.last_sweep = clock.t + 10 * HOUR                     # keep sweeps out of this test
+    script.products["A"] = [product([(7, 9000)]), product([(7, 9000)], ok=False)]
+    tr.check("A")
+    clock.t += HOUR
+    q_before = tr.watch["A"].last_qualifying
+    tr.check("A")                                           # fails: Keepa serves its stale copy
+    assert tr.watch["A"].last_qualifying == q_before        # stale offers don't refresh "qualifying"
+    assert tr.next_check(clock.t + 4 * 60) is None          # not due yet...
+    assert tr.next_check(clock.t + 5 * 60) == "A"           # ...but due in 5 min, not a full interval
+    clock.t += 5 * 60; tr.check("A")                        # fails again: back off to 10 min
+    assert tr.next_check(clock.t + 9 * 60) is None and tr.next_check(clock.t + 10 * 60) == "A"
+
+
+def test_fast_lane_is_for_headline_deals(rig):
+    clock, script, store, tr, _ = rig
+    now = unix_to_keepa(T0)
+    # A: 55% off (headline). B: 45% off a $250 reference (near miss)
+    script.pages = [[deal("A", 9000, 20000, now), deal("B", 13750, 25000, now)]]
+    tr.sweep()
+    script.products = {"A": [product([(1, 9000)])], "B": [product([(2, 13750)], new=25000)]}
+    tr.check("A"); tr.check("B")
+    assert tr.interval(tr.watch["A"], clock.t) == 15 * 60
+    assert tr.interval(tr.watch["B"], clock.t) == 60 * 60
+
+
+def test_priority_retries_then_fast_lane_then_most_overdue(rig):
+    clock, script, store, tr, _ = rig
+    old, now = unix_to_keepa(T0 - 30 * HOUR), unix_to_keepa(T0)
+    script.pages = [[deal("OLD", 9000, 20000, old), deal("HOT", 9000, 20000, now), deal("FAIL", 9000, 20000, old)]]
+    tr.sweep()
+    tr.last_sweep = clock.t + 30 * HOUR
+    script.products = {"OLD": [product([(1, 9000)])], "HOT": [product([(2, 9000)])],
+                       "FAIL": [product([(3, 9000)]), product([(3, 9000)], ok=False)]}
+    for a in ("OLD", "HOT", "FAIL"):
+        tr.check(a)
+    clock.t += 5 * HOUR                                     # OLD is 5x overdue, HOT 20x, FAIL about to fail
+    tr.check("FAIL")                                        # fails: a retry is due in 5 min
+    clock.t += 5 * 60
+    assert tr.next_check(clock.t) == "FAIL"                 # retry beats everything
+    tr.fail_streak.clear()
+    assert tr.next_check(clock.t) == "HOT"                  # then the fast lane
+    tr.watch["HOT"].last_check = clock.t
+    assert tr.next_check(clock.t) in ("OLD", "FAIL")        # then the most overdue of the rest

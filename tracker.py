@@ -5,6 +5,7 @@
     uv run tracker.py run                # long-running; in Docker: docker compose --profile tracker up -d
     uv run tracker.py status             # free, from Postgres
     uv run tracker.py report             # free, from Postgres -> research/tracker/report.md
+    uv run tracker.py backfill-products  # free: product signals (D28) from the saved raw check responses
 
 The approval file (.fiftyoff/tracker-approval.json, gitignored) carries a token cap and an expiry.
 Without a valid one, `run` waits and re-checks every 10 min instead of exiting, so a container
@@ -186,6 +187,31 @@ def cmd_report(args, cfg) -> int:
     return 0
 
 
+def cmd_backfill_products(args, cfg) -> int:
+    """Rebuild the `product` table from raw check responses (rule 8), oldest first so the newest
+    values win while COALESCE keeps reviews/rating from the first check."""
+    import gzip
+    from fiftyoff.store_pg import PgStore
+    from fiftyoff.tracker import product_signals
+    s = PgStore(dsn())
+    files = sorted(Path(args.root, "raw").glob("*/*-check-*.json.gz"))
+    n = 0
+    for f in files:
+        try:
+            r = json.loads(gzip.open(f).read())
+            p = (r.get("response") or {}).get("products") or []
+            if not p or not p[0].get("asin"):
+                continue
+            t = datetime.fromisoformat(r["request"]["sentAt"]).timestamp()
+            s.save_product(t, p[0]["asin"], product_signals(p[0]))
+            n += 1
+        except (OSError, ValueError, KeyError) as e:
+            print(f"skip {f}: {e!r}")
+    print(f"backfilled {n} check responses from {len(files)} files;",
+          "products:", s.conn.execute("SELECT count(*), count(reviews), count(monthly_sold) FROM product").fetchone())
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--config", default="preflight.toml")
@@ -201,9 +227,11 @@ def main(argv=None) -> int:
     r.add_argument("--max-steps", type=int)
     sub.add_parser("status")
     sub.add_parser("report")
+    sub.add_parser("backfill-products")
     args = ap.parse_args(argv)
     cfg = preflight.load_config(Path(args.config))
-    return {"unlock": cmd_unlock, "run": cmd_run, "status": cmd_status, "report": cmd_report}[args.cmd](args, cfg)
+    return {"unlock": cmd_unlock, "run": cmd_run, "status": cmd_status, "report": cmd_report,
+            "backfill-products": cmd_backfill_products}[args.cmd](args, cfg)
 
 
 if __name__ == "__main__":

@@ -53,6 +53,12 @@ CREATE TABLE IF NOT EXISTS units (
 );
 ALTER TABLE units ADD COLUMN IF NOT EXISTS keepa_first_seen_at timestamptz;
 
+-- Demand signals for the internal deal score (D28). Never exposed by the API (D19).
+CREATE TABLE IF NOT EXISTS product (
+  asin text PRIMARY KEY, brand text, cat_path text[], reviews int, rating real, drops30 int, drops90 int,
+  monthly_sold int, amazon_sells bool, rank int, updated_at timestamptz NOT NULL
+);
+
 -- Public deal feed: D19-consented columns only (title, link, our % off, condition, current Resale
 -- price) plus our own "last confirmed" time. Show with a "Data by Keepa" link to keepa.com.
 CREATE OR REPLACE VIEW feed AS
@@ -64,6 +70,26 @@ FROM units u JOIN watch w USING (asin)
 WHERE u.state <> 'gone' AND w.retired_at IS NULL
   -- tiers mirror TrackerConfig.tiers (preflight.toml [tracker]); keep in sync
   AND ((u.strict_last >= 0.40 AND u.ref_last_cents >= 10000) OR (u.strict_last >= 0.30 AND u.ref_last_cents >= 20000));
+
+-- Internal views the API reads (as feed_reader) to score, group and filter. They carry signals the
+-- API must not emit (reference price, reviews, rank...): fiftyoff/api.py picks the public fields.
+CREATE OR REPLACE VIEW deal_internal AS
+SELECT u.asin, u.offer_id, w.title, w.category, w.image, u.cond, u.last_price_cents AS resale_cents,
+       u.ref_last_cents AS ref_cents, u.strict_last AS strict, u.last_seen_at AS last_confirmed_at,
+       u.state = 'unconfirmed' AS unconfirmed, u.keepa_first_seen_at, u.first_seen_at,
+       p.brand, p.cat_path, p.reviews, p.rating, p.drops30, p.monthly_sold, p.amazon_sells, p.rank,
+       w.created_at AS priced_at  -- Keepa's creationDate: when the deal's current Resale price was set
+FROM units u JOIN watch w USING (asin) LEFT JOIN product p USING (asin)
+WHERE u.state <> 'gone' AND w.retired_at IS NULL AND ((u.strict_last >= 0.40 AND u.ref_last_cents >= 10000) OR (u.strict_last >= 0.30 AND u.ref_last_cents >= 20000));
+
+-- Recently gone qualifying units, retired watches included (D27: shown with their last price).
+CREATE OR REPLACE VIEW gone_internal AS
+SELECT u.asin, u.offer_id, w.title, w.category, w.image, u.cond, u.last_price_cents AS resale_cents,
+       u.ref_last_cents AS ref_cents, u.strict_last AS strict, u.last_seen_at, u.gone_at,
+       p.brand, p.cat_path, p.reviews, p.rating, p.drops30, p.monthly_sold, p.amazon_sells, p.rank,
+       u.first_seen_at, u.appeared_after_at, u.keepa_first_seen_at, u.absent_since_at, u.revivals
+FROM units u JOIN watch w USING (asin) LEFT JOIN product p USING (asin)
+WHERE u.state = 'gone' AND u.gone_at > now() - interval '7 days' AND ((u.strict_last >= 0.40 AND u.ref_last_cents >= 10000) OR (u.strict_last >= 0.30 AND u.ref_last_cents >= 20000));
 """
 
 
@@ -139,6 +165,14 @@ class PgStore:
                 [(_ts(t), r["asin"], r["parent"], r["cat"], r["title"], r["resale"], r["ref"], r["strict"],
                   r["keepa_pct"], r["cond"], r["comment"], r["rank"], r["creation"], r["image"], r["qualifies"],
                   r["formula"]) for r in rows])
+
+    def save_product(self, t, asin, sig):
+        cols = list(sig)
+        self.conn.execute(
+            f"INSERT INTO product (asin, {', '.join(cols)}, updated_at) VALUES (%s, {', '.join(['%s'] * len(cols))}, %s) "
+            f"ON CONFLICT (asin) DO UPDATE SET {', '.join(f'{c} = COALESCE(EXCLUDED.{c}, product.{c})' for c in cols)}, "
+            "updated_at = EXCLUDED.updated_at",
+            (asin, *sig.values(), _ts(t)))
 
     def add_check(self, t, check, offers):
         cid = self.conn.execute(

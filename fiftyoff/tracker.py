@@ -56,6 +56,8 @@ class TrackerConfig:
     fast_minutes: int = 15
     unconfirmed_minutes: int = 30
     slow_minutes: int = 60
+    headline: float = 0.50              # D30: only new units at this strict discount get the fast cadence
+    retry_minutes: int = 5              # D30: a failed check (0 tokens) is retried soon, doubling per failure
 
     @classmethod
     def from_toml(cls, t: dict) -> "TrackerConfig":
@@ -155,6 +157,39 @@ def lifespan(u: Unit) -> dict | None:
     return {"lower_min": lower, "upper_min": upper, "confidence": conf, "algo": UNIT_ALGO_VERSION}
 
 
+# ---------------------------------------------------------------- product signals (D28)
+
+RATING, COUNT_REVIEWS = 16, 17  # csv indexes; only present when the request asks for history
+
+
+def _last_csv(csv: list, i: int) -> int | None:
+    a = csv[i] if len(csv) > i else None
+    return a[-1] if a and a[-1] is not None and a[-1] >= 0 else None
+
+
+def product_signals(p: dict) -> dict:
+    """Demand signals from a product response, for the internal deal score (D28). Never shown to users
+    (D19). A field Keepa didn't send is None, so an upsert can keep the earlier value: reviews and
+    rating only come with history, i.e. on a watch's first check."""
+    csv = p.get("csv") or []
+    stats = p.get("stats") or {}
+    cur = stats.get("current") or []
+    pos = lambda v: v if isinstance(v, int) and v > 0 else None
+    rating = _last_csv(csv, RATING)
+    avail = p.get("availabilityAmazon")
+    return {
+        "brand": p.get("brand") or None,
+        "cat_path": [c.get("name") for c in p.get("categoryTree") or []] or None,
+        "reviews": _last_csv(csv, COUNT_REVIEWS),
+        "rating": rating / 10 if rating else None,  # Keepa stores 45 for 4.5 stars
+        "drops30": stats.get("salesRankDrops30") if (stats.get("salesRankDrops30") or -1) >= 0 else None,
+        "drops90": stats.get("salesRankDrops90") if (stats.get("salesRankDrops90") or -1) >= 0 else None,
+        "monthly_sold": pos(p.get("monthlySold")),
+        "amazon_sells": None if avail is None else avail != -1,
+        "rank": pos(cur[3]) if len(cur) > 3 else None,
+    }
+
+
 # ---------------------------------------------------------------- persistence
 
 class Store(Protocol):
@@ -164,6 +199,7 @@ class Store(Protocol):
     def save_unit(self, u: Unit) -> None: ...
     def add_sweep_rows(self, t: float, rows: list[dict]) -> None: ...
     def add_check(self, t: float, check: dict, offers: list[dict]) -> None: ...
+    def save_product(self, t: float, asin: str, signals: dict) -> None: ...
 
 
 class MemoryStore:
@@ -175,6 +211,7 @@ class MemoryStore:
         self.state: dict = {}
         self.sweep_rows: list[dict] = []
         self.checks: list[tuple[dict, list[dict]]] = []
+        self.products: dict[str, dict] = {}
 
     def load(self):
         return dict(self.watch), dict(self.units), dict(self.state)
@@ -193,6 +230,10 @@ class MemoryStore:
 
     def add_check(self, t, check, offers):
         self.checks.append(({"t": t, **check}, offers))
+
+    def save_product(self, t, asin, signals):
+        old = self.products.get(asin, {})
+        self.products[asin] = {k: v if v is not None else old.get(k) for k, v in signals.items()}
 
 
 # ---------------------------------------------------------------- the tracker
@@ -216,6 +257,7 @@ class Tracker:
         self.watch, self.units, state = store.load()
         self.last_sweep: float = state.get("last_sweep", 0.0)
         self.last_full_sweep: float = state.get("last_full_sweep", 0.0)
+        self.fail_streak: dict[str, int] = {}
 
     # ---- sweeps
 
@@ -282,20 +324,30 @@ class Tracker:
         # listings at once, and they must not all claim the 15-minute cadence.
         born = [u.keepa_first_seen or u.first_seen for u in units if u.keepa_first_seen or u.appeared_after]
         if (w.created and t - w.created < NEW_WINDOW) or any(t - b < NEW_WINDOW for b in born):
-            return self.cfg.fast_minutes * 60
+            # D30: the fast lane is for headline deals (or a watch not yet checked); new near misses go hourly
+            hot = not units or any((u.strict_last or 0) >= self.cfg.headline for u in units)
+            return (self.cfg.fast_minutes if hot else self.cfg.slow_minutes) * 60
         if any(u.state == "unconfirmed" for u in units):
             return self.cfg.unconfirmed_minutes * 60
         return self.cfg.slow_minutes * 60
 
     def next_check(self, t: float) -> str | None:
-        """The most overdue active watch (overdue / its own interval), or None if nothing is due."""
-        best, best_ratio = None, 1.0
+        """The next due watch, or None. D30 strict priority, because demand far exceeds the ~164
+        checks/h budget and a plain most-overdue pick starves both of these: (0) retries of failed
+        checks, (1) the fast lane (new headline deals), (2) everything else. Most overdue
+        (overdue / its own interval) first within a class."""
+        best, best_key = None, None
         for w in self.watch.values():
             if w.retired is not None:
                 continue
-            ratio = (t - w.last_check) / self.interval(w, t)
-            if ratio >= best_ratio:
-                best, best_ratio = w.asin, ratio
+            iv = self.interval(w, t)
+            ratio = (t - w.last_check) / iv
+            if ratio < 1.0:
+                continue
+            cls = 0 if w.asin in self.fail_streak else 1 if iv == self.cfg.fast_minutes * 60 else 2
+            key = (cls, -ratio)
+            if best_key is None or key < best_key:
+                best, best_key = w.asin, key
         return best
 
     def check(self, asin: str) -> None:
@@ -310,6 +362,7 @@ class Tracker:
         except KeepaError as e:
             self.log(f"  {asin}: {e}")
             w.last_check = t
+            self._defer_retry(w, t)
             self.store.save_watch(w)
             return
         self.apply_check(asin, (data.get("products") or [{}])[0], t, data.get("tokensConsumed"))
@@ -332,18 +385,33 @@ class Tracker:
         best = max((o["strict"] for o in offers if o["strict"] is not None), default=None)
         self.store.add_check(t, {"asin": asin, "offers_ok": ok, "ref": ref, "ref_parts": parts, "best": best,
                                  "tokens": tokens, "formula": CHECK_FORMULA_VERSION}, offers)
+        try:  # ranking signals are a nice-to-have; an odd product must never stop the tracker
+            self.store.save_product(t, asin, product_signals(p))
+        except Exception as e:  # noqa: BLE001
+            self.log(f"  {asin}: product signals skipped ({e!r})")
         prev_check = w.last_check or None
         csv = p.get("csv") or []
         looks = [keepa_to_unix(x) for x, _ in decode_csv(csv[EXTRA_INFO_UPDATES] if len(csv) > EXTRA_INFO_UPDATES else None)] \
             if w.ok_checks == 0 and ok else []
         w.last_check = t
-        if any(qualifies(o["strict"], ref, w.rank, self.cfg) for o in offers):
-            w.last_qualifying = t
-        if ok:  # a failed offer fetch says nothing about presence
+        if ok:  # a failed offer fetch says nothing about presence; its offers are Keepa's stale copy
+            if any(qualifies(o["strict"], ref, w.rank, self.cfg) for o in offers):
+                w.last_qualifying = t
             w.ok_checks += 1
+            self.fail_streak.pop(asin, None)
             self._update_units(asin, offers, ref, t, prev_check, looks)
+        else:
+            self._defer_retry(w, t)
         self._maybe_retire(w, t)
         self.store.save_watch(w)
+
+    def _defer_retry(self, w: Watch, t: float) -> None:
+        """D30: a failed check cost nothing and told us nothing, so make the watch due again in
+        retry_minutes (doubling per consecutive failure) instead of a full interval."""
+        n = self.fail_streak.get(w.asin, 0)
+        self.fail_streak[w.asin] = n + 1
+        iv = self.interval(w, t)
+        w.last_check = t - iv + min(self.cfg.retry_minutes * 60 * 2 ** n, iv)
 
     def _update_units(self, asin, offers, ref, t, prev_check, looks=()) -> None:
         present = {o["offer_id"]: o for o in offers}

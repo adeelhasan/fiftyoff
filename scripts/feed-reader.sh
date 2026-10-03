@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Create or update the read-only `feed_reader` role the API uses: it can SELECT the feed view and
+# Create or update the read-only `feed_reader` role the API uses: it can SELECT the feed views and
 # nothing else. Run on the box where the stack runs. Password comes from FEED_READER_PASSWORD in .env.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -12,6 +12,6 @@ END \$\$;
 ALTER ROLE feed_reader PASSWORD '$PW';
 REVOKE ALL ON ALL TABLES IN SCHEMA public FROM feed_reader;
 GRANT USAGE ON SCHEMA public TO feed_reader;
-GRANT SELECT ON feed TO feed_reader;
+GRANT SELECT ON feed, deal_internal, gone_internal TO feed_reader;
 SQL
-echo "feed_reader: SELECT on feed only"
+echo "feed_reader: SELECT on feed, deal_internal, gone_internal only"

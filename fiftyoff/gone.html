@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<title>Recently gone</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>½</text></svg>">
+<style>
+/* Admin view of deals that went (D27): what went, at what price, and how long it was listed.
+   Lifespans are bounds with a rule-9 confidence label, never a single precise number. */
+:root {
+  --bg: #fafaf7; --surface: #ffffff; --fg: #16161a; --muted: #6b6b76; --line: #e7e6e0; --img: #ffffff;
+  --accent: #e4572e; --accent-soft: #fdebe5; --warn: #9a6a00; --warn-soft: #fbf1d9; --good: #1f7a4d; --good-soft: #e3f3ea;
+  --font: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #111114; --surface: #18181c; --fg: #f2f2ee; --muted: #9a9aa6; --line: #2a2a31; --img: #f4f4f1;
+  --accent: #f0714b; --accent-soft: #3a211a; --warn: #e3b450; --warn-soft: #33290f; --good: #5cc48f; --good-soft: #15291f; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #111114; --surface: #18181c; --fg: #f2f2ee; --muted: #9a9aa6; --line: #2a2a31; --img: #f4f4f1;
+  --accent: #f0714b; --accent-soft: #3a211a; --warn: #e3b450; --warn-soft: #33290f; --good: #5cc48f; --good-soft: #15291f; color-scheme: dark }
+* { box-sizing: border-box }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.45 var(--font); padding-inline: 16px; padding-block: 24px 40px }
+main { max-width: 1120px; margin: 0 auto; display: grid; grid-template-columns: minmax(0, 1fr); gap: 18px }
+header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 16px }
+.mark { font-size: 24px; font-weight: 800; letter-spacing: -.03em; margin: 0; line-height: 1 }
+.mark a { color: inherit; text-decoration: none }
+.mark span { color: var(--accent) }
+h1 { font-size: 18px; margin: 0 }
+.back { margin-left: auto; color: var(--accent); text-decoration: none; font-weight: 600 }
+.lede { color: var(--muted); margin: 0; max-width: 75ch }
+.controls { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: center }
+.controls label { font-size: 12px; color: var(--muted); display: flex; gap: 6px; align-items: center }
+select { font: inherit; color: var(--fg); background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 5px 8px }
+input[type=checkbox] { accent-color: var(--accent); width: 16px; height: 16px; margin: 0 }
+:is(select, input, a, button):focus-visible { outline: 2px solid var(--accent); outline-offset: 2px }
+.stats { display: flex; flex-wrap: wrap; gap: 8px 22px; font-size: 13px; color: var(--muted) }
+.stats b { color: var(--fg); font-variant-numeric: tabular-nums }
+.wrap { overflow-x: auto; background: var(--surface); border: 1px solid var(--line); border-radius: 12px }
+table.list { width: 100%; border-collapse: collapse; min-width: 760px }
+.list th, .list td { padding: 8px 10px; border-top: 1px solid var(--line); text-align: left; vertical-align: middle }
+.list th { border-top: 0; font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); font-weight: 600; white-space: nowrap }
+.list td.n, .list th.n { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap }
+.thumb { width: 48px; height: 48px; background: var(--img); border-radius: 6px; display: grid; place-items: center; overflow: hidden }
+.thumb img { width: 100%; height: 100%; object-fit: contain; padding: 3px }
+.t { max-width: 380px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden }
+.t a { color: inherit; text-decoration: none }
+.t a:hover { text-decoration: underline }
+.sub { font-size: 12px; color: var(--muted) }
+.off { color: var(--accent); font-weight: 800 }
+.near { font-size: 11px; color: var(--warn); background: var(--warn-soft); border-radius: 4px; padding: 0 5px; margin-left: 4px }
+.conf { font-size: 10.5px; font-weight: 700; letter-spacing: .05em; border-radius: 4px; padding: 1px 5px; margin-left: 6px }
+.conf.HIGH { background: var(--good-soft); color: var(--good) }
+.conf.MEDIUM { background: var(--warn-soft); color: var(--warn) }
+.conf.LOW { background: var(--line); color: var(--muted) }
+.scorebox { position: relative; display: inline-block }
+.score { font: inherit; font-weight: 700; background: none; border: 1px solid var(--line); border-radius: 999px; padding: 1px 8px; color: var(--fg); cursor: help; font-variant-numeric: tabular-nums }
+.tip { display: none; position: absolute; right: 0; top: calc(100% + 6px); z-index: 5; width: 210px; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; font-size: 12px; box-shadow: 0 8px 24px rgb(0 0 0 / .18); text-align: left }
+.scorebox:hover .tip, .scorebox:focus-within .tip { display: block }
+.tip table { width: 100%; border-collapse: collapse }
+.tip td { padding: 1px 0 }
+.tip td:last-child { text-align: right; font-weight: 700 }
+.tip tr.total td { border-top: 1px solid var(--line); padding-top: 3px }
+.tip .w { color: var(--muted) }
+.empty { padding: 24px; text-align: center; color: var(--muted) }
+footer { font-size: 12px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 6px 16px; justify-content: space-between }
+footer a { color: inherit }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <p class="mark"><a href="/closed-preview">fifty<span>off</span></a></p>
+    <h1>Recently gone</h1>
+    <a class="back" href="/closed-preview">← Live deals</a>
+  </header>
+  <p class="lede">Qualifying Resale units our checks stopped finding. "Gone" means 6 h without a sighting: usually sold, sometimes withdrawn, and we can't tell which. "Listed" is how long the unit was up, as a range with a confidence label. When we found it already listed, only a lower bound exists (LOW).</p>
+
+  <div class="controls">
+    <label for="hours">Window
+      <select id="hours"><option value="24">24 h</option><option value="72" selected>3 days</option><option value="168">7 days</option></select>
+    </label>
+    <label for="sort">Sort
+      <select id="sort"><option value="seen">Most recent</option><option value="score">Deal score</option><option value="fast">Went fastest</option><option value="off">Biggest discount</option></select>
+    </label>
+    <label><input type="checkbox" id="near" checked> Include near misses (30–49%)</label>
+  </div>
+
+  <div class="stats" id="stats" aria-live="polite">Loading…</div>
+
+  <div class="wrap"><table class="list">
+    <thead><tr><th></th><th>Product</th><th class="n">Was</th><th class="n">Off</th><th class="n">Score</th><th>Listed</th><th class="n">Last seen</th></tr></thead>
+    <tbody id="rows"></tbody>
+  </table></div>
+
+  <footer>
+    <span>Admin view, closed preview. Lifespan algorithm from the tracker (D20), confidence per rule 9.</span>
+    <a href="https://keepa.com" rel="noopener" target="_blank">Data by Keepa</a>
+  </footer>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const usd = (n) => n.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: n >= 100 ? 0 : 2 });
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const dur = (m) => m < 60 ? `${m} min` : m < 2880 ? `${Math.round(m / 60)} h` : `${Math.round(m / 1440)} d`;
+const ago = (m) => m < 60 ? `${m} min ago` : m < 1440 ? `${Math.floor(m / 60)} h ago` : `${Math.floor(m / 1440)} d ago`;
+const sized = (u) => u ? u.replace(/\.(jpg|png|gif)$/, "._SL120_.$1") : "";
+const COND = { "1": "Like New", "0.92": "Very Good", "0.75": "Good", "0.55": "Acceptable" };
+let data = [];
+
+function listed(l) {
+  if (!l) return `<span class="sub">unknown</span>`;
+  const txt = l.upper_min == null ? `≥ ${dur(l.lower_min)}` : dur(l.lower_min) === dur(l.upper_min) ? `~${dur(l.upper_min)}` : `${dur(l.lower_min)}–${dur(l.upper_min)}`;
+  return `${txt}<span class="conf ${l.confidence}">${l.confidence}</span>`;
+}
+
+function scoreBox(score, s) {
+  const r = (label, k, w) => `<tr><td>${label} <span class="w">${w}</span></td><td>${s[k].toFixed(1)}</td></tr>`;
+  return `<span class="scorebox"><button class="score" type="button" aria-label="Deal score ${score}, show breakdown">${score}</button>
+    <span class="tip" role="tooltip"><table>${r("Discount", "discount", "40%")}${r("Demand", "demand", "25%")}${r("$ saved", "savings", "25%")}${r("Rating", "rating", "10%")}
+    <tr class="total"><td>× ${COND[String(s.condition_factor)] || ""} ${s.condition_factor}</td><td>${score}</td></tr></table></span></span>`;
+}
+
+function row(g) {
+  return `<tr>
+    <td><div class="thumb">${g.image ? `<img src="${esc(sized(g.image))}" alt="" loading="lazy" referrerpolicy="no-referrer">` : ""}</div></td>
+    <td><div class="t"><a href="${esc(g.url)}" rel="noopener" target="_blank">${esc(g.title)}</a></div>
+      <div class="sub">${esc(String(g.condition).replace(/^Used - /, ""))} · ${esc(g.category)}${g.near_miss ? `<span class="near">near miss</span>` : ""}</div></td>
+    <td class="n">${usd(g.price)}</td>
+    <td class="n"><span class="off">${g.pct_off}%</span></td>
+    <td class="n">${scoreBox(g.score, g.score_parts)}</td>
+    <td>${listed(g.lifespan)}</td>
+    <td class="n">${ago(g.minutes_since_seen)}</td>
+  </tr>`;
+}
+
+const upper = (g) => g.lifespan ? (g.lifespan.upper_min ?? Infinity) : Infinity;
+const SORTS = {
+  seen: (a, b) => a.minutes_since_seen - b.minutes_since_seen,
+  score: (a, b) => b.score - a.score,
+  fast: (a, b) => upper(a) - upper(b) || a.lifespan?.lower_min - b.lifespan?.lower_min,
+  off: (a, b) => b.pct_off - a.pct_off,
+};
+
+function render() {
+  const rows = [...data].sort(SORTS[$("sort").value]);
+  $("rows").innerHTML = rows.length ? rows.map(row).join("") : `<tr><td colspan="7" class="empty">Nothing gone in this window.</td></tr>`;
+  const bounded = data.filter((g) => g.lifespan && g.lifespan.upper_min != null && g.lifespan.confidence !== "LOW");
+  const under6 = bounded.filter((g) => g.lifespan.upper_min <= 360).length;
+  const by = (c) => data.filter((g) => g.lifespan?.confidence === c).length;
+  $("stats").innerHTML = `<span><b>${data.length}</b> gone</span><span><b>${data.filter((g) => !g.near_miss).length}</b> at 50%+</span>
+    <span>timing: <b>${by("HIGH")}</b> high · <b>${by("MEDIUM")}</b> medium · <b>${by("LOW")}</b> low</span>
+    <span><b>${under6}</b> of ${bounded.length} with good timing went within 6 h</span>`;
+}
+
+async function load() {
+  const q = new URLSearchParams({ hours: $("hours").value, tier: $("near").checked ? "all" : "50", limit: "500" });
+  try {
+    const r = await fetch(`/api/gone?${q}`);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    data = (await r.json()).gone;
+    render();
+  } catch (e) {
+    $("stats").textContent = `Couldn't load (${e.message}).`;
+  }
+}
+["hours", "near"].forEach((id) => $(id).addEventListener("change", load));
+$("sort").addEventListener("change", render);
+load();
+</script>
+</body>
+</html>
