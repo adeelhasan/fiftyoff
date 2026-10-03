@@ -35,12 +35,25 @@ def gone_rows():
 
 
 PUBLIC_PRODUCT = {"asin", "title", "category", "image", "url", "score", "score_parts", "pct_off", "price", "near_miss",
-                  "unit_count", "minutes_since_confirmed", "confidence", "units"}
+                  "unit_count", "minutes_since_confirmed", "minutes_since_priced", "is_new", "confidence", "units"}
 PUBLIC_UNIT = {"condition", "price", "pct_off", "score", "minutes_since_confirmed", "unconfirmed", "confidence"}
 
 
+def status_stub():
+    now = datetime.now(timezone.utc)
+    return {"funnel": {"watching": 10, "watched_ever": 12, "units_live": 9, "units_unconfirmed": 1, "units_gone": 2,
+                       "units_revived": 0, "products_with_signals": 10, "tracking_since": now - timedelta(days=2)},
+            "hourly": [{"hour": now, "new_watches": 3, "new_50": 1, "checks": 160, "failed": 2, "check_tokens": 1100,
+                        "gone": 1}],
+            "state": {"heartbeat": now.timestamp() - 30, "last_sweep": now.timestamp() - 600,
+                      "status": {"tokens_spent": 5000, "token_cap": 403200, "fast_lane": 17}},
+            "census": [{"cat_id": 165793011, "category": "Toys & Games", "swept_at": now, "listings": 900, "products": 800,
+                        "qualifying_products": 120, "products_50": 60, "products_50_100": 25, "median_strict": 0.41,
+                        "share_popular": 0.3, "median_ref_usd": 64}]}
+
+
 def app(**kw):
-    return TestClient(create_app(fetch=rows, fetch_gone=gone_rows, password="", **kw))
+    return TestClient(create_app(fetch=rows, fetch_gone=gone_rows, fetch_status=status_stub, password="", **kw))
 
 
 def test_feed_emits_public_fields_only_and_attribution():
@@ -71,6 +84,9 @@ def test_feed_groups_by_asin_and_defaults_to_headline_deals():
     near = {p["asin"]: p["near_miss"] for p in c.get("/api/feed?tier=all").json()["products"]}
     assert near == {"B0TEST0001": False, "B0TEST0002": True, "B0TEST0003": False}
     assert [p["asin"] for p in c.get("/api/feed?q=drill").json()["products"]] == ["B0TEST0001"]
+    assert c.get("/api/feed?q=rill").json()["products"] == []          # word starts only
+    assert [g["asin"] for g in c.get("/api/gone?q=espresso").json()["gone"]] == ["B0GONE0001"]
+    assert c.get("/api/gone?q=drill").json()["gone"] == []
 
 
 def test_bad_sort_is_rejected_and_preview_serves():
@@ -79,6 +95,7 @@ def test_bad_sort_is_rejected_and_preview_serves():
     page = c.get("/closed-preview")
     assert page.status_code == 200 and "Data by Keepa" in page.text
     assert "Data by Keepa" in c.get("/closed-preview/gone").text
+    assert "Data by Keepa" in c.get("/closed-preview/status").text
 
 
 def test_login_popup_guards_everything_but_health():
@@ -112,10 +129,30 @@ def test_low_confidence_units_are_held_back_by_default():
     settled = _row("B0OLD00001", "Old Drill", 0.55, "Used - Like New", 9000, 20000, minutes=150)
     missed = {**_row("B0MISS0001", "Missed Vac", 0.55, "Used - Like New", 9000, 20000, minutes=30),
               "unconfirmed": True}
-    c = TestClient(create_app(fetch=lambda: [fresh_drop, settled, missed], fetch_gone=gone_rows, password=""))
+    c = TestClient(create_app(fetch=lambda: [fresh_drop, settled, missed], fetch_gone=gone_rows,
+                              fetch_status=status_stub, password=""))
     r = c.get("/api/feed").json()
     assert [p["asin"] for p in r["products"]] == ["B0OLD00001"] and r["held_back"] == 2
     assert r["products"][0]["confidence"]["label"] == "HIGH"            # 2.5 h on a settled listing: still likely
     every = {p["asin"]: p["confidence"] for p in c.get("/api/feed?conf=all").json()["products"]}
     assert every["B0HOT00001"]["label"] == "LOW" and every["B0HOT00001"]["hot"]
     assert every["B0MISS0001"]["label"] == "LOW"                         # our last check didn't find it
+
+
+def test_new_deals_sort_first_and_fresh_filter():
+    now = datetime.now(timezone.utc)
+    fresh = {**_row("B0NEW00001", "New Lamp", 0.51, "Used - Like New", 4900, 10000), "priced_at": now - timedelta(hours=2)}
+    c = TestClient(create_app(fetch=lambda: rows() + [fresh], fetch_gone=gone_rows, fetch_status=status_stub, password=""))
+    ps = c.get("/api/feed?sort=newest").json()["products"]
+    assert ps[0]["asin"] == "B0NEW00001" and ps[0]["is_new"] and ps[0]["minutes_since_priced"] in (119, 120)
+    assert [p["asin"] for p in c.get("/api/feed?fresh=true").json()["products"]] == ["B0NEW00001"]
+
+
+def test_status_reports_funnel_hourly_and_tracker():
+    r = app().get("/api/status").json()
+    f = r["funnel"]
+    assert f["watching"] == 10 and f["qualifying_units"] == 4 and f["qualifying_products"] == 3
+    assert f["products_50"] == 2 and f["products_50_no_acceptable"] == 2 and f["products_shown_default"] == 2
+    assert r["hourly"][0]["checks"] == 160 and r["tracker"]["fast_lane"] == 17
+    assert r["census"][0]["category"] == "Toys & Games" and r["census"][0]["median_strict"] == 0.41
+    assert 0.4 <= r["tracker"]["heartbeat_minutes_ago"] <= 0.6 and r["tracker"]["last_sweep_minutes_ago"] == 10.0

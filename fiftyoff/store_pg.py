@@ -82,6 +82,57 @@ SELECT u.asin, u.offer_id, w.title, w.category, w.image, u.cond, u.last_price_ce
 FROM units u JOIN watch w USING (asin) LEFT JOIN product p USING (asin)
 WHERE u.state <> 'gone' AND w.retired_at IS NULL AND ((u.strict_last >= 0.40 AND u.ref_last_cents >= 10000) OR (u.strict_last >= 0.30 AND u.ref_last_cents >= 20000));
 
+-- D32 census: supply in other categories, sweep-only (no watches, no checks).
+CREATE TABLE IF NOT EXISTS census_rows (
+  id bigserial PRIMARY KEY, swept_at timestamptz NOT NULL, cat_id bigint NOT NULL, asin text NOT NULL,
+  parent_asin text, category text, title text, resale_cents int, ref_cents int, strict real, keepa_pct int,
+  cond text, rank int, creation_kmin int, qualifies bool, formula text
+);
+CREATE INDEX IF NOT EXISTS census_rows_cat ON census_rows (cat_id, swept_at);
+
+-- Latest pass per category, one row per listing (ASIN + condition + price), summarised. ASIN-level counts.
+CREATE OR REPLACE VIEW census_summary AS
+WITH last AS (SELECT cat_id, max(swept_at) AS swept_at FROM census_rows GROUP BY cat_id),
+r AS (SELECT c.* FROM census_rows c JOIN last USING (cat_id, swept_at))
+SELECT cat_id, max(category) AS category, max(swept_at) AS swept_at,
+  count(DISTINCT (asin, cond, resale_cents)) AS listings,  -- a page fetched twice in one pass counts once
+  count(DISTINCT asin) AS products,
+  count(DISTINCT asin) FILTER (WHERE qualifies) AS qualifying_products,
+  count(DISTINCT asin) FILTER (WHERE strict >= 0.5 AND (rank IS NULL OR rank <= 50000)) AS products_50,
+  count(DISTINCT asin) FILTER (WHERE strict >= 0.5 AND ref_cents >= 10000 AND (rank IS NULL OR rank <= 50000)) AS products_50_100,
+  round((percentile_cont(0.5) WITHIN GROUP (ORDER BY strict))::numeric, 2) AS median_strict,
+  round(avg(CASE WHEN rank <= 50000 THEN 1.0 ELSE 0.0 END)::numeric, 2) AS share_popular,
+  round((percentile_cont(0.5) WITHIN GROUP (ORDER BY ref_cents))::numeric / 100) AS median_ref_usd
+FROM r GROUP BY cat_id;
+
+-- Status page (admin): aggregates only, read by the API as feed_reader.
+CREATE OR REPLACE VIEW status_state AS
+SELECT key, value FROM tracker_state WHERE key IN ('heartbeat', 'status', 'last_sweep', 'last_full_sweep');
+
+CREATE OR REPLACE VIEW status_funnel AS SELECT
+  (SELECT count(*) FROM watch WHERE retired_at IS NULL) AS watching,
+  (SELECT count(*) FROM watch) AS watched_ever,
+  (SELECT count(*) FROM units WHERE state = 'live') AS units_live,
+  (SELECT count(*) FROM units WHERE state = 'unconfirmed') AS units_unconfirmed,
+  (SELECT count(*) FROM units WHERE state = 'gone') AS units_gone,
+  (SELECT count(*) FROM units WHERE revivals > 0) AS units_revived,
+  (SELECT count(*) FROM product) AS products_with_signals,
+  (SELECT min(first_seen_at) FROM units) AS tracking_since;
+
+CREATE OR REPLACE VIEW status_hourly AS
+WITH h AS (SELECT generate_series(date_trunc('hour', now()) - interval '23 hours', date_trunc('hour', now()),
+                                  interval '1 hour') AS h)
+SELECT h.h AS hour,
+  (SELECT count(*) FROM watch w WHERE w.added_at >= h.h AND w.added_at < h.h + interval '1 hour') AS new_watches,
+  (SELECT count(DISTINCT u.asin) FROM units u JOIN watch w USING (asin)
+    WHERE w.created_at >= h.h AND w.created_at < h.h + interval '1 hour' AND u.strict_first >= 0.5) AS new_50,
+  (SELECT count(*) FROM checks c WHERE c.checked_at >= h.h AND c.checked_at < h.h + interval '1 hour') AS checks,
+  (SELECT count(*) FROM checks c WHERE c.checked_at >= h.h AND c.checked_at < h.h + interval '1 hour'
+    AND NOT c.offers_ok) AS failed,
+  (SELECT coalesce(sum(c.tokens), 0) FROM checks c WHERE c.checked_at >= h.h AND c.checked_at < h.h + interval '1 hour') AS check_tokens,
+  (SELECT count(*) FROM units u WHERE u.gone_at >= h.h AND u.gone_at < h.h + interval '1 hour') AS gone
+FROM h ORDER BY 1;
+
 -- Recently gone qualifying units, retired watches included (D27: shown with their last price).
 CREATE OR REPLACE VIEW gone_internal AS
 SELECT u.asin, u.offer_id, w.title, w.category, w.image, u.cond, u.last_price_cents AS resale_cents,
@@ -173,6 +224,17 @@ class PgStore:
             f"ON CONFLICT (asin) DO UPDATE SET {', '.join(f'{c} = COALESCE(EXCLUDED.{c}, product.{c})' for c in cols)}, "
             "updated_at = EXCLUDED.updated_at",
             (asin, *sig.values(), _ts(t)))
+
+    def add_census_rows(self, t, cat_id, rows):
+        if not rows:
+            return
+        with self.conn.cursor() as cur:
+            cur.executemany(
+                "INSERT INTO census_rows (swept_at, cat_id, asin, parent_asin, category, title, resale_cents, ref_cents, "
+                "strict, keepa_pct, cond, rank, creation_kmin, qualifies, formula) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                [(_ts(t), cat_id, r["asin"], r["parent"], r["cat"], r["title"], r["resale"], r["ref"], r["strict"],
+                  r["keepa_pct"], r["cond"], r["rank"], r["creation"], r["qualifies"], r["formula"]) for r in rows])
 
     def add_check(self, t, check, offers):
         cid = self.conn.execute(

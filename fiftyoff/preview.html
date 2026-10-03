@@ -30,6 +30,7 @@ main > * { min-width: 0 }
 header { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 12px }
 .mark { font-size: 30px; font-weight: 800; letter-spacing: -.03em; line-height: 1; margin: 0 }
 .mark span { color: var(--accent) }
+.chip a { color: inherit }
 .chip { font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px }
 .lede { color: var(--muted); margin: 6px 0 0; max-width: 62ch }
 h2 { font-size: 13px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); margin: 0 0 10px; display: flex; gap: 10px; align-items: baseline }
@@ -58,6 +59,11 @@ select, input[type=search] { font: inherit; font-size: 14px; color: var(--fg); b
 input[type=search] { min-width: 0; width: 200px }
 input[type=checkbox] { accent-color: var(--accent); width: 16px; height: 16px; margin: 0 }
 :is(select, input, a, summary, button):focus-visible { outline: 2px solid var(--accent); outline-offset: 2px }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: -8px }
+.chips button { font: inherit; font-size: 12.5px; color: var(--fg); background: var(--surface); border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px; cursor: pointer }
+.chips button span { color: var(--muted); margin-left: 4px; font-variant-numeric: tabular-nums }
+.chips button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff }
+.chips button[aria-pressed="true"] span { color: #fff }
 .count { margin-left: auto; font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums }
 
 /* Product cards */
@@ -79,6 +85,7 @@ input[type=checkbox] { accent-color: var(--accent); width: 16px; height: 16px; m
 .tip p { margin: 6px 0 0; color: var(--muted); font-size: 11px; line-height: 1.35 }
 .flag { position: absolute; left: 8px; bottom: 8px; font-size: 11px; font-weight: 700; border-radius: 4px; padding: 2px 6px }
 .flag.many { background: var(--accent); color: #fff }
+.flag.new { background: var(--good); color: #fff; left: 8px; top: 8px; bottom: auto }
 .flag.near { background: var(--warn-soft); color: var(--warn); left: auto; right: 8px }
 .card .body { padding: 12px 14px 14px; display: grid; gap: 8px; align-content: start }
 .nums { display: flex; align-items: baseline; gap: 10px; font-variant-numeric: tabular-nums }
@@ -119,7 +126,7 @@ footer a { color: inherit }
       <h1 class="mark">fifty<span>off</span></h1>
       <p class="lede">Amazon Resale units at a genuine half off: measured against the lowest recent New price, not the list price. Most are one of a kind, so they go.</p>
     </div>
-    <span class="chip">Closed preview</span>
+    <span class="chip">Closed preview · <a href="/closed-preview/status">status</a></span>
   </header>
 
   <section aria-labelledby="missed-h" id="missed" hidden>
@@ -142,7 +149,8 @@ footer a { color: inherit }
         <select id="sort">
           <option value="best">Best deal</option>
           <option value="discount">Biggest discount</option>
-          <option value="newest">Recently confirmed</option>
+          <option value="newest">Newest deals</option>
+          <option value="confirmed">Recently confirmed</option>
           <option value="price">Lowest price</option>
         </select>
       </label>
@@ -158,6 +166,8 @@ footer a { color: inherit }
       <span class="count" id="count" aria-live="polite">Loading deals…</span>
     </div>
   </section>
+
+  <div class="chips" id="chips" role="group" aria-label="Quick keywords"></div>
 
   <p class="note" id="near-note" hidden>Near misses are 30–49% off but still big savings: 40%+ off a $100+ item, or 30%+ off a $200+ item. They're marked in yellow.</p>
 
@@ -199,7 +209,7 @@ function card(p) {
   return `<li class="card">
     <div class="pic"><a href="${esc(p.url)}" rel="noopener" target="_blank" tabindex="-1" aria-hidden="true">${img(p.image, 400, "")}</a>
       ${scoreBox(p.score, p.score_parts, c)}
-      ${c.label === "LOW" ? `<span class="flag maybe">May be gone</span>` : ""}
+      ${c.label === "LOW" ? `<span class="flag maybe">May be gone</span>` : p.is_new ? `<span class="flag new" title="Priced ${ago(p.minutes_since_priced)}">New</span>` : ""}
       ${p.unit_count > 1 ? `<span class="flag many">${p.unit_count} units</span>` : ""}
       ${p.near_miss ? `<span class="flag near">Near miss</span>` : ""}</div>
     <div class="body">
@@ -223,18 +233,22 @@ function missed(g) {
 
 async function loadGone() {
   try {
-    const r = await fetch(`/api/gone?limit=24`);
+    const g = new URLSearchParams({ limit: "24" });
+    if ($("q").value.trim()) g.set("q", $("q").value.trim());
+    const r = await fetch(`/api/gone?${g}`);
     if (!r.ok) return;
     const d = await r.json();
     $("missed").hidden = !d.gone.length;
     $("strip").innerHTML = d.gone.map(missed).join("");
-    $("missed-count").textContent = `${d.count} deal${d.count === 1 ? "" : "s"} at 50%+ gone in the last 3 days`;
+    const kw = $("q").value.trim();
+    $("missed-count").textContent = `${d.count} deal${d.count === 1 ? "" : "s"} at 50%+${kw ? ` matching “${kw}”` : ""} gone in the last 3 days`;
   } catch { /* the strip is optional */ }
 }
 
 let timer;
 async function load() {
   const q = new URLSearchParams({ sort: $("sort").value, limit: "200", tier: $("near").checked ? "all" : "50", conf: $("conf").value });
+  if (freshOnly) q.set("fresh", "true");
   if ($("cat").value) q.set("category", $("cat").value);
   if ($("acc").checked) q.set("acceptable", "true");
   if ($("q").value.trim()) q.set("q", $("q").value.trim());
@@ -243,6 +257,8 @@ async function load() {
     const r = await fetch(`/api/feed?${q}`);
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const d = await r.json();
+    if (!q.has("q") && !freshOnly) { counts = d.products.map((p) => p.title.toLowerCase()); newCount = d.products.filter((p) => p.is_new).length; }
+    renderChips();
     $("deals").innerHTML = d.products.length ? d.products.map(card).join("")
       : `<li class="empty">No deals match. Try near misses, another category, or a shorter search.</li>`;
     $("count").textContent = `${d.count} product${d.count === 1 ? "" : "s"} · ${d.units} units` +
@@ -252,7 +268,32 @@ async function load() {
   }
 }
 ["cat", "sort", "conf", "near", "acc"].forEach((id) => $(id).addEventListener("change", load));
-$("q").addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(load, 250); });
+// Quick keywords: tap to filter, tap again to clear. Counts come from the last unfiltered load, and a
+// keyword with no current deals is hidden. The keyword lives in the URL (?q=rug) so a view can be bookmarked.
+const KEYWORDS = ["Rug", "Speaker", "Headphones", "TV", "Monitor", "Laptop", "iPad", "Camera", "Router",
+  "Vacuum", "Coffee", "Espresso", "Blender", "Grill", "Drill", "Saw", "Faucet", "Chair", "Bike", "Cooler"];
+let counts = [], newCount = 0, freshOnly = new URLSearchParams(location.search).get("fresh") === "1";
+const hits = (k) => counts.filter((t) => new RegExp(`(^|[^a-z0-9])${k.toLowerCase()}`).test(t)).length;
+function renderChips() {
+  const cur = $("q").value.trim().toLowerCase();
+  $("chips").innerHTML = `<button type="button" data-k="__new" aria-pressed="${freshOnly}">New in 24 h<span>${newCount}</span></button>` + KEYWORDS.map((k) => [k, hits(k)]).filter(([k, n]) => n || k.toLowerCase() === cur)
+    .map(([k, n]) => `<button type="button" data-k="${k}" aria-pressed="${k.toLowerCase() === cur}">${k}<span>${n}</span></button>`).join("");
+}
+$("chips").addEventListener("click", (e) => {
+  const b = e.target.closest("button");
+  if (!b) return;
+  if (b.dataset.k === "__new") { freshOnly = !freshOnly; syncUrl(); load(); return; }
+  $("q").value = b.getAttribute("aria-pressed") === "true" ? "" : b.dataset.k;
+  syncUrl(); load(); loadGone();
+});
+function syncUrl() {
+  const u = new URL(location.href);
+  $("q").value.trim() ? u.searchParams.set("q", $("q").value.trim()) : u.searchParams.delete("q");
+  freshOnly ? u.searchParams.set("fresh", "1") : u.searchParams.delete("fresh");
+  history.replaceState(null, "", u);
+}
+$("q").value = new URLSearchParams(location.search).get("q") || "";
+$("q").addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(() => { syncUrl(); load(); loadGone(); }, 250); });
 load(); loadGone();
 setInterval(() => { load(); loadGone(); }, 60_000);
 </script>

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import base64
 import os
+import re
 import secrets
 import time
 from datetime import datetime, timezone
@@ -30,12 +31,15 @@ from .tracker import Unit, lifespan
 ATTRIBUTION = {"text": "Data by Keepa", "url": "https://keepa.com"}
 PREVIEW = Path(__file__).parent / "preview.html"
 GONE_PAGE = Path(__file__).parent / "gone.html"
+STATUS_PAGE = Path(__file__).parent / "status.html"
+NEW_HOURS = 24             # a deal is "new" when Keepa saw its current price set within this window
 HEADLINE = 0.50            # D22: the default view is strict 50%+; below it is a labelled "near miss"
 ACCEPTABLE = "Used - Acceptable"
 SORTS = {
     "best": lambda p: -p["score"],
     "discount": lambda p: -p["pct_off"],
-    "newest": lambda p: p["minutes_since_confirmed"],
+    "newest": lambda p: (p["minutes_since_priced"] is None, p["minutes_since_priced"] or 0),
+    "confirmed": lambda p: p["minutes_since_confirmed"],
     "price": lambda p: p["price"],
 }
 
@@ -55,6 +59,11 @@ def pg_gone() -> list[dict]:
     return _query("gone_internal")
 
 
+def pg_status() -> dict:
+    return {"funnel": _query("status_funnel")[0], "hourly": _query("status_hourly"),
+            "state": {r["key"]: r["value"] for r in _query("status_state")}, "census": _query("census_summary")}
+
+
 CACHE_SECONDS = 30  # however much traffic arrives, the database sees at most one query per view per 30 s
 
 
@@ -65,11 +74,22 @@ def _minutes(now: datetime, t: datetime) -> int:
 CONF_MIN = {"all": 0, "likely": 1, "high": 2}  # D30: the feed holds back LOW-confidence units by default
 
 
+def matches(title: str | None, q: str | None) -> bool:
+    """Every query word must start a word in the title: "rug" finds "Rug" and "Rugs", not "drug"."""
+    if not q:
+        return True
+    return all(re.search(rf"(?<![a-z0-9]){re.escape(w)}", (title or "").lower()) for w in q.lower().split())
+
+
+def _priced_min(now: datetime, r: dict) -> int | None:
+    return _minutes(now, r["priced_at"]) if r.get("priced_at") else None
+
+
 def _keep(r: dict, tier: str, acceptable: bool, category: str | None, q: str | None) -> bool:
     return ((tier == "all" or (r["strict"] or 0) >= HEADLINE)
             and (acceptable or r["cond"] != ACCEPTABLE)
             and (category is None or r["category"] == category)
-            and (not q or all(w in (r["title"] or "").lower() for w in q.lower().split())))
+            and matches(r["title"], q))
 
 
 def group_products(rows: list[dict], now: datetime) -> list[dict]:
@@ -90,6 +110,8 @@ def group_products(rows: list[dict], now: datetime) -> list[dict]:
             "score": units[0]["score"], "score_parts": breakdown(best), "pct_off": max(u["pct_off"] for u in units),
             "price": min(u["price"] for u in units), "near_miss": best["strict"] < HEADLINE,
             "unit_count": len(units), "minutes_since_confirmed": min(u["minutes_since_confirmed"] for u in units),
+            "minutes_since_priced": _priced_min(now, best),
+            "is_new": (_priced_min(now, best) is not None and _priced_min(now, best) < NEW_HOURS * 60),
             "confidence": max((u["confidence"] for u in units), key=lambda c: c["p"]),
             "units": units,
         })
@@ -118,6 +140,7 @@ def gone_lifespan(r: dict) -> dict | None:
 
 
 def create_app(fetch: Callable[[], list[dict]] = pg_live, fetch_gone: Callable[[], list[dict]] = pg_gone,
+               fetch_status: Callable[[], dict] = pg_status,
                password: str | None = None, user: str = "fiftyoff") -> FastAPI:
     """`password` (default: PREVIEW_PASSWORD env) turns on a browser login popup (HTTP Basic Auth) for
     everything except /api/health. Only safe behind HTTPS, which the Cloudflare tunnel provides."""
@@ -149,12 +172,14 @@ def create_app(fetch: Callable[[], list[dict]] = pg_live, fetch_gone: Callable[[
         return {"ok": True}
 
     @app.get("/api/feed")
-    def feed(category: str | None = None, sort: str = Query("best", pattern="^(best|discount|newest|price)$"),
+    def feed(category: str | None = None,
+             sort: str = Query("best", pattern="^(best|discount|newest|confirmed|price)$"), fresh: bool = False,
              tier: str = Query("50", pattern="^(50|all)$"), acceptable: bool = False,
              q: str | None = Query(None, max_length=80), conf: str = Query("likely", pattern="^(all|likely|high)$"),
              limit: int = Query(100, ge=1, le=500)):
         now = datetime.now(timezone.utc)
-        rows = [r for r in cached("live", fetch) if _keep(r, tier, acceptable, category, q)]
+        rows = [r for r in cached("live", fetch) if _keep(r, tier, acceptable, category, q)
+                and (not fresh or (_priced_min(now, r) is not None and _priced_min(now, r) < NEW_HOURS * 60))]
         held = sum(RANK[live_confidence(r, now)["label"]] < CONF_MIN[conf] for r in rows)
         rows = [r for r in rows if RANK[live_confidence(r, now)["label"]] >= CONF_MIN[conf]]
         products = sorted(group_products(rows, now), key=SORTS[sort])
@@ -163,13 +188,14 @@ def create_app(fetch: Callable[[], list[dict]] = pg_live, fetch_gone: Callable[[
 
     @app.get("/api/gone")
     def gone(category: str | None = None, tier: str = Query("50", pattern="^(50|all)$"),
+             q: str | None = Query(None, max_length=80),
              hours: int = Query(72, ge=1, le=168),
              limit: int = Query(30, ge=1, le=500)):
         """Just missed (D27): qualifying units gone recently, best first. "Gone" = absent from our checks
         for 6 h (D20); we can't tell a sale from a withdrawal, so the copy says "gone", never "sold"."""
         now = datetime.now(timezone.utc)
         rows = [r for r in cached("gone", fetch_gone)
-                if _keep(r, tier, True, category, None) and _minutes(now, r["last_seen_at"]) <= hours * 60]
+                if _keep(r, tier, True, category, q) and _minutes(now, r["last_seen_at"]) <= hours * 60]
         rows.sort(key=score, reverse=True)
         items = [{"asin": r["asin"], "title": r["title"], "category": r["category"], "image": image_url(r["image"]),
                   "url": f"https://www.amazon.com/dp/{r['asin']}?aod=1", "condition": r["cond"],
@@ -178,6 +204,44 @@ def create_app(fetch: Callable[[], list[dict]] = pg_live, fetch_gone: Callable[[
                  for r in rows[:limit]]
         return {"gone": items, "count": len(rows), "score_version": SCORE_VERSION,
                 "attribution": ATTRIBUTION, "generated_at": now.isoformat()}
+
+    @app.get("/api/status")
+    def status():
+        """Admin status: the tracking funnel (same filters as the feed), arrivals and checks per hour,
+        and the tracker's own heartbeat, spend and fast-lane size."""
+        now = datetime.now(timezone.utc)
+        st = cached("status", lambda: [fetch_status()])[0]
+        live = cached("live", fetch)
+        q50 = [r for r in live if (r["strict"] or 0) >= HEADLINE]
+        q50na = [r for r in q50 if r["cond"] != ACCEPTABLE]
+        shown = [r for r in q50na if RANK[live_confidence(r, now)["label"]] >= CONF_MIN["likely"]]
+        new = [r for r in q50 if _priced_min(now, r) is not None and _priced_min(now, r) < NEW_HOURS * 60]
+        f = st["funnel"]
+        hb = st["state"].get("heartbeat")
+        return {
+            "funnel": {**{k: v for k, v in f.items() if k != "tracking_since"},
+                       "tracking_since": f["tracking_since"].isoformat() if f.get("tracking_since") else None,
+                       "qualifying_units": len(live), "qualifying_products": len({r["asin"] for r in live}),
+                       "products_50": len({r["asin"] for r in q50}), "products_50_no_acceptable": len({r["asin"] for r in q50na}),
+                       "products_shown_default": len({r["asin"] for r in shown}),
+                       "units_held_back_default": len(q50na) - len(shown),
+                       "new_50_products_24h": len({r["asin"] for r in new})},
+            "hourly": [{**h, "hour": h["hour"].isoformat()} for h in st["hourly"]],
+            "tracker": {**(st["state"].get("status") or {}),
+                        "heartbeat_minutes_ago": round((now.timestamp() - hb) / 60, 1) if hb else None,
+                        "last_sweep_minutes_ago": round((now.timestamp() - st["state"]["last_sweep"]) / 60, 1)
+                        if st["state"].get("last_sweep") else None},
+            "census": sorted(({**c, "swept_at": c["swept_at"].isoformat(),
+                               **{k: float(c[k]) if c.get(k) is not None else None
+                                  for k in ("median_strict", "share_popular", "median_ref_usd")}}
+                              for c in st.get("census") or []), key=lambda c: -(c["products_50_100"] or 0)),
+            "versions": {"score": SCORE_VERSION, "confidence": CONFIDENCE_VERSION},
+            "attribution": ATTRIBUTION, "generated_at": now.isoformat(),
+        }
+
+    @app.get("/closed-preview/status", response_class=HTMLResponse)
+    def status_page():
+        return STATUS_PAGE.read_text()
 
     @app.get("/closed-preview/gone", response_class=HTMLResponse)
     def gone_page():

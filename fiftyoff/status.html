@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<title>Tracker status</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>½</text></svg>">
+<style>
+/* Admin status: tracker health, the tracking funnel, and 24 h of arrivals and checks.
+   Single-series bar charts in the accent colour; text stays in text tokens. */
+:root {
+  --bg: #fafaf7; --surface: #ffffff; --fg: #16161a; --muted: #6b6b76; --faint: #9a9aa3; --line: #e7e6e0;
+  --accent: #e4572e; --accent-soft: #fdebe5; --good: #1f7a4d; --good-soft: #e3f3ea; --warn: #9a6a00; --warn-soft: #fbf1d9;
+  --font: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #111114; --surface: #18181c; --fg: #f2f2ee; --muted: #9a9aa6; --faint: #6c6c76; --line: #2a2a31;
+  --accent: #f0714b; --accent-soft: #3a211a; --good: #5cc48f; --good-soft: #15291f; --warn: #e3b450; --warn-soft: #33290f; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #111114; --surface: #18181c; --fg: #f2f2ee; --muted: #9a9aa6; --faint: #6c6c76; --line: #2a2a31;
+  --accent: #f0714b; --accent-soft: #3a211a; --good: #5cc48f; --good-soft: #15291f; --warn: #e3b450; --warn-soft: #33290f; color-scheme: dark }
+* { box-sizing: border-box }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.45 var(--font); padding-inline: 16px; padding-block: 24px 40px }
+main { max-width: 1120px; margin: 0 auto; display: grid; grid-template-columns: minmax(0, 1fr); gap: 22px }
+header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 16px }
+.mark { font-size: 24px; font-weight: 800; letter-spacing: -.03em; margin: 0; line-height: 1 }
+.mark a { color: inherit; text-decoration: none }
+.mark span { color: var(--accent) }
+h1 { font-size: 18px; margin: 0 }
+nav { margin-left: auto; display: flex; gap: 14px }
+nav a { color: var(--accent); text-decoration: none; font-weight: 600 }
+h2 { font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); margin: 0 0 10px }
+.updated { color: var(--muted); font-size: 12.5px; margin: 0 }
+:is(a, button, summary):focus-visible { outline: 2px solid var(--accent); outline-offset: 2px }
+
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px }
+.tile { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; display: grid; gap: 2px; align-content: start }
+.tile .k { font-size: 12px; color: var(--muted) }
+.tile .v { font-size: 24px; font-weight: 800; font-variant-numeric: tabular-nums; letter-spacing: -.01em }
+.tile .s { font-size: 12px; color: var(--muted) }
+.pill { display: inline-block; font-size: 11px; font-weight: 700; border-radius: 4px; padding: 1px 6px; margin-left: 6px; vertical-align: middle }
+.pill.ok { background: var(--good-soft); color: var(--good) }
+.pill.warn { background: var(--warn-soft); color: var(--warn) }
+.meter { height: 6px; background: var(--line); border-radius: 999px; overflow: hidden; margin-top: 6px }
+.meter i { display: block; height: 100%; background: var(--accent); border-radius: 999px }
+
+.funnel { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 6px 0 }
+.frow { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 2fr) 70px; gap: 12px; align-items: center; padding: 7px 14px }
+.frow + .frow { border-top: 1px solid var(--line) }
+.frow .lab { font-size: 13.5px }
+.frow .lab small { display: block; color: var(--muted); font-size: 12px }
+.frow .bar { height: 10px; border-radius: 0 4px 4px 0; background: var(--accent); min-width: 2px }
+.frow .bar.units { background: var(--faint) }
+.frow .n { text-align: right; font-weight: 700; font-variant-numeric: tabular-nums }
+.legend { display: flex; gap: 14px; font-size: 12px; color: var(--muted); padding: 6px 14px 4px }
+.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px }
+
+.charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px }
+.chart { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px 10px; position: relative }
+.chart h3 { font-size: 13.5px; margin: 0 }
+.chart .sum { font-size: 12px; color: var(--muted); margin: 0 0 8px }
+.chart svg { display: block; width: 100%; height: auto; overflow: visible }
+.chart .grid { stroke: var(--line); stroke-width: 1 }
+.chart .axis { fill: var(--muted); font-size: 10px; font-family: var(--font) }
+.chart .mark { fill: var(--accent) }
+.chart .hit { fill: transparent }
+.chart .hit:hover + .mark, .chart .mark.on { opacity: .75 }
+.tip { position: absolute; pointer-events: none; background: var(--fg); color: var(--bg); font-size: 12px; border-radius: 6px; padding: 4px 8px; white-space: nowrap; transform: translate(-50%, -100%); display: none; font-variant-numeric: tabular-nums }
+details { font-size: 13px }
+summary { cursor: pointer; color: var(--muted) }
+table.data { border-collapse: collapse; margin-top: 8px; font-variant-numeric: tabular-nums; width: 100%; background: var(--surface); border: 1px solid var(--line); border-radius: 10px }
+table.data th, table.data td { padding: 4px 10px; text-align: right; border-top: 1px solid var(--line) }
+table.data th { font-size: 11px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .05em; border-top: 0 }
+table.data td:first-child, table.data th:first-child { text-align: left }
+.wrap { overflow-x: auto }
+footer { font-size: 12px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 6px 16px; justify-content: space-between }
+footer a { color: inherit }
+@media (max-width: 520px) { .frow { grid-template-columns: minmax(0, 1fr) 70px } .frow .bar { display: none } }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <p class="mark"><a href="/closed-preview">fifty<span>off</span></a></p>
+    <h1>Tracker status</h1>
+    <nav><a href="/closed-preview">Live deals</a><a href="/closed-preview/gone">Recently gone</a></nav>
+  </header>
+  <p class="updated" id="updated" aria-live="polite">Loading…</p>
+
+  <section aria-labelledby="h-health"><h2 id="h-health">Tracker</h2><div class="tiles" id="tiles"></div></section>
+
+  <section aria-labelledby="h-funnel">
+    <h2 id="h-funnel">What we track</h2>
+    <div class="funnel" id="funnel"></div>
+  </section>
+
+  <section aria-labelledby="h-census">
+    <h2 id="h-census">Census: other categories (sweep only, D32)</h2>
+    <p class="updated" style="margin-bottom:8px">What Keepa's Resale deal feed lists in each category on its latest pass, with our strict discount. Nothing here is watched or checked, so there's no availability or lifespan. Product counts are per ASIN; “popular” means sales rank ≤ 50k. Sorted by 50%+ off a $100+ reference.</p>
+    <div class="wrap"><table class="data" id="census"></table></div>
+  </section>
+
+  <section aria-labelledby="h-hours">
+    <h2 id="h-hours">Last 24 hours, per hour (UTC)</h2>
+    <div class="charts" id="charts"></div>
+    <details><summary>Show as table</summary><div class="wrap"><table class="data" id="table"></table></div></details>
+  </section>
+
+  <footer>
+    <span id="versions"></span>
+    <a href="https://keepa.com" rel="noopener" target="_blank">Data by Keepa</a>
+  </footer>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const fmt = (n) => n == null ? "–" : Number(n).toLocaleString("en-US");
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const ago = (m) => m == null ? "never" : m < 1 ? "just now" : m < 60 ? `${Math.round(m)} min ago` : `${(m / 60).toFixed(1)} h ago`;
+const hh = (iso) => new Date(iso).toISOString().slice(11, 13) + ":00";
+
+function tile(k, v, s, pill) {
+  return `<div class="tile"><span class="k">${k}${pill || ""}</span><span class="v">${v}</span>${s ? `<span class="s">${s}</span>` : ""}</div>`;
+}
+
+function tiles(t) {
+  const hbOk = t.heartbeat_minutes_ago != null && t.heartbeat_minutes_ago < 10;
+  const pct = t.token_cap ? Math.min(100, 100 * t.tokens_spent / t.token_cap) : 0;
+  const exp = t.expires ? new Date(t.expires) : null;
+  const days = exp ? (exp - Date.now()) / 864e5 : null;
+  return [
+    tile("Heartbeat", ago(t.heartbeat_minutes_ago), hbOk ? "Tracker loop is running" : "No heartbeat for 10+ min: check the tracker",
+      `<span class="pill ${hbOk ? "ok" : "warn"}">${hbOk ? "✓ OK" : "! Stale"}</span>`),
+    tile("Last sweep", ago(t.last_sweep_minutes_ago), "Deal-feed sweep, every 30 min"),
+    tile("Fast lane", fmt(t.fast_lane), `New 50%+ deals checked every 15 min · ${fmt(t.retrying)} retrying`),
+    (() => {
+      const rate = t.per_min_1h, cap = t.refill_per_min || 20, use = rate != null ? Math.min(100, 100 * rate / cap) : 0;
+      return `<div class="tile"><span class="k">Keepa usage (the real limit)${use >= 90 ? `<span class="pill warn">At capacity</span>` : ""}</span>
+        <span class="v">${rate ?? "–"}<small style="font-size:14px;font-weight:600;color:var(--muted)"> / ${cap} per min</small></span>
+        <span class="s">last hour · ${t.per_min_24h ?? "–"}/min over 24 h · ${fmt(t.tokens_left)} in the bucket now. Unused tokens expire after ~1 h, so spare capacity can't be saved up.</span>
+        <div class="meter" role="meter" aria-valuenow="${use.toFixed(0)}" aria-valuemin="0" aria-valuemax="100" aria-label="Share of Keepa's per-minute refill used"><i style="width:${use}%"></i></div></div>`;
+    })(),
+    `<div class="tile"><span class="k">Approval (our own spending gate)${days != null && days < 3 ? `<span class="pill warn">! Expires soon</span>` : ""}</span>
+      <span class="v">${fmt(t.tokens_spent)}</span>
+      <span class="s">tokens of ${fmt(t.token_cap)} (= 14 days at the full rate) · ends ${exp ? exp.toISOString().slice(0, 10) : "–"}${days != null ? ` (${days.toFixed(1)} days)` : ""}</span>
+      <div class="meter" role="meter" aria-valuenow="${pct.toFixed(0)}" aria-valuemin="0" aria-valuemax="100" aria-label="Share of the approval's token cap spent"><i style="width:${pct}%"></i></div></div>`,
+  ].join("");
+}
+
+function funnel(f) {
+  // Products and units are different things (rule 9): two bar tones, labelled.
+  const rows = [
+    ["Products being watched", "sweeps found them qualifying; retired after 6–48 h without a deal", f.watching, "p"],
+    ["Live Resale units", `on those products · ${fmt(f.units_unconfirmed)} not found on the last check`, f.units_live + f.units_unconfirmed, "u"],
+    ["Qualifying units", "40%+ off a $100+ reference, or 30%+ off $200+", f.qualifying_units, "u"],
+    ["Qualifying products", "the same units, one row per product", f.qualifying_products, "p"],
+    ["Products at 50%+", "the headline tier", f.products_50, "p"],
+    ["…excluding “Acceptable”", "off by default in the feed", f.products_50_no_acceptable, "p"],
+    ["Shown by default", `held back as “may be gone”: ${fmt(f.units_held_back_default)} units`, f.products_shown_default, "p"],
+    ["New at 50%+ in the last 24 h", "priced within 24 h, by Keepa's date", f.new_50_products_24h, "p"],
+  ];
+  const max = Math.max(...rows.map((r) => r[2] || 0), 1);
+  return `<div class="legend"><span><i style="background:var(--accent)"></i>Products</span><span><i style="background:var(--faint)"></i>Resale units</span></div>` +
+    rows.map(([l, s, n, kind]) => `<div class="frow"><div class="lab">${l}<small>${s}</small></div>
+      <div class="bar${kind === "u" ? " units" : ""}" style="width:${100 * (n || 0) / max}%"></div><div class="n">${fmt(n)}</div></div>`).join("") +
+    `<div class="legend"><span>Since ${f.tracking_since ? f.tracking_since.slice(0, 10) : "–"}: ${fmt(f.watched_ever)} products watched, ${fmt(f.units_gone)} units gone, ${fmt(f.units_revived)} came back after being marked gone.</span></div>`;
+}
+
+// One single-series bar chart: rounded data-ends on the baseline, 2px gaps, recessive grid, hover tooltip.
+function bars(id, title, key, hourly, unit, extra) {
+  const W = 480, H = 120, L = 26, B = 16, n = hourly.length;
+  const vals = hourly.map((h) => h[key] || 0), max = Math.max(...vals, 1);
+  const step = (W - L) / n, bw = Math.max(2, step - 2);
+  const y = (v) => (H - B) * (1 - v / max);
+  const total = vals.reduce((a, b) => a + b, 0);
+  const marks = vals.map((v, i) => {
+    const x = L + i * step + 1, top = y(v), h = (H - B) - top, r = Math.min(4, bw / 2, h);
+    const d = h <= 0 ? "" : `M${x},${H - B}V${top + r}Q${x},${top} ${x + r},${top}H${x + bw - r}Q${x + bw},${top} ${x + bw},${top + r}V${H - B}Z`;
+    return `<rect class="hit" x="${L + i * step}" y="0" width="${step}" height="${H - B}" data-i="${i}"></rect><path class="mark" d="${d}"></path>`;
+  }).join("");
+  const ticks = hourly.map((h, i) => i % 6 === 0 ? `<text class="axis" x="${L + i * step + step / 2}" y="${H - 3}" text-anchor="middle">${hh(h.hour)}</text>` : "").join("");
+  return `<div class="chart" id="${id}"><h3>${title}</h3><p class="sum">${fmt(total)} ${unit} in 24 h · peak ${fmt(max)}/h</p>
+    <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(title)}: ${fmt(total)} in 24 hours">
+      <line class="grid" x1="${L}" x2="${W}" y1="0" y2="0"></line><line class="grid" x1="${L}" x2="${W}" y1="${H - B}" y2="${H - B}"></line>
+      <text class="axis" x="${L - 4}" y="8" text-anchor="end">${fmt(max)}</text><text class="axis" x="${L - 4}" y="${H - B}" text-anchor="end">0</text>
+      ${marks}${ticks}</svg><div class="tip"></div></div>`;
+}
+
+function wireTips(hourly, defs) {
+  defs.forEach(([id, , key, unit, extra]) => {
+    const el = $(id), tip = el.querySelector(".tip"), svg = el.querySelector("svg");
+    el.querySelectorAll(".hit").forEach((r) => {
+      const show = () => {
+        const h = hourly[+r.dataset.i], box = r.getBoundingClientRect(), host = el.getBoundingClientRect();
+        tip.textContent = `${hh(h.hour)}–${hh(new Date(new Date(h.hour).getTime() + 36e5).toISOString())} · ${fmt(h[key])} ${unit}${extra ? extra(h) : ""}`;
+        tip.style.left = `${box.left - host.left + box.width / 2}px`;
+        tip.style.top = `${svg.getBoundingClientRect().top - host.top - 4}px`;
+        tip.style.display = "block";
+      };
+      r.addEventListener("mouseenter", show);
+      r.addEventListener("click", show);
+      r.addEventListener("mouseleave", () => { tip.style.display = "none"; });
+    });
+  });
+}
+
+async function load() {
+  try {
+    const r = await fetch("/api/status");
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const d = await r.json();
+    $("tiles").innerHTML = tiles(d.tracker);
+    $("funnel").innerHTML = funnel(d.funnel);
+    const defs = [
+      ["c-new50", "New deals at 50%+", "new_50", "products"],
+      ["c-new", "New qualifying products", "new_watches", "products"],
+      ["c-checks", "Live checks", "checks", "checks", (h) => ` · ${fmt(h.failed)} failed · ${fmt(h.check_tokens)} tokens`],
+      ["c-gone", "Units gone", "gone", "units"],
+    ];
+    $("charts").innerHTML = defs.map(([id, t, k, u, x]) => bars(id, t, k, d.hourly, u, x)).join("");
+    wireTips(d.hourly, defs);
+    $("table").innerHTML = `<tr><th>Hour (UTC)</th><th>New 50%+</th><th>New qualifying</th><th>Checks</th><th>Failed</th><th>Check tokens</th><th>Gone</th></tr>` +
+      d.hourly.map((h) => `<tr><td>${hh(h.hour)}</td><td>${fmt(h.new_50)}</td><td>${fmt(h.new_watches)}</td><td>${fmt(h.checks)}</td><td>${fmt(h.failed)}</td><td>${fmt(h.check_tokens)}</td><td>${fmt(h.gone)}</td></tr>`).join("");
+    $("census").innerHTML = d.census.length
+      ? `<tr><th>Category</th><th>Products</th><th>Qualifying</th><th>50%+ popular</th><th>50%+ on $100+</th><th>Median strict</th><th>Median ref.</th><th>Popular</th><th>Swept</th></tr>` +
+        d.census.map((c) => `<tr><td>${esc(c.category || c.cat_id)}</td><td>${fmt(c.products)}</td><td>${fmt(c.qualifying_products)}</td><td>${fmt(c.products_50)}</td>
+          <td><b>${fmt(c.products_50_100)}</b></td><td>${c.median_strict != null ? Math.round(c.median_strict * 100) + "%" : "–"}</td>
+          <td>${c.median_ref_usd != null ? "$" + fmt(c.median_ref_usd) : "–"}</td><td>${c.share_popular != null ? Math.round(c.share_popular * 100) + "%" : "–"}</td>
+          <td>${ago((Date.now() - new Date(c.swept_at)) / 6e4)}</td></tr>`).join("")
+      : `<tr><td class="empty">No census passes yet: one category is swept every 25 min.</td></tr>`;
+    $("versions").textContent = `Score ${d.versions.score} · confidence ${d.versions.confidence} · the current hour is partial`;
+    $("updated").textContent = `Updated ${new Date(d.generated_at).toLocaleTimeString()} · refreshes every minute`;
+  } catch (e) {
+    $("updated").textContent = `Couldn't load status (${e.message}). The API may be restarting; retrying every minute.`;
+  }
+}
+load();
+setInterval(load, 60_000);
+</script>
+</body>
+</html>

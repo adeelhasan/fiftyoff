@@ -12,6 +12,6 @@ END \$\$;
 ALTER ROLE feed_reader PASSWORD '$PW';
 REVOKE ALL ON ALL TABLES IN SCHEMA public FROM feed_reader;
 GRANT USAGE ON SCHEMA public TO feed_reader;
-GRANT SELECT ON feed, deal_internal, gone_internal TO feed_reader;
+GRANT SELECT ON feed, deal_internal, gone_internal, status_state, status_funnel, status_hourly, census_summary TO feed_reader;
 SQL
-echo "feed_reader: SELECT on feed, deal_internal, gone_internal only"
+echo "feed_reader: SELECT on the feed, gone and status views only"

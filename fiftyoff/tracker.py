@@ -27,6 +27,11 @@ CHECK_FORMULA_VERSION = "d0.2"  # strict ref at a check: min of Amazon/New now, 
 UNIT_ALGO_VERSION = "u0.2"      # unit states + lifespan bounds + confidence, below (u0.2: Keepa-bracketed starts)
 
 TARGET_CATS = [172282, 1055398, 2619525011, 228013, 3375251]  # Electronics, H&K, Appliances, Tools, Sports
+# D32 census: other Amazon.com root categories, swept in rotation for supply only (no watching, no checks).
+# Media (books, music, video, Kindle, apps) is left out, as in the feed rules. Keepa's response names each
+# id, so a wrong id shows up in the census table instead of failing silently.
+CENSUS_CATS = [165793011, 3760911, 3760901, 1064954, 165796011, 2619533011, 15684181, 2972638011, 7141123011,
+               11091801, 16310091, 2617941011, 468642, 2335752011, 16310101, 10272111, 4991425011]
 
 HOUR = 3600
 GONE_AFTER = 6 * HOUR         # continuous absence before a unit counts as gone (~98% of hides were shorter)
@@ -56,6 +61,11 @@ class TrackerConfig:
     fast_minutes: int = 15
     unconfirmed_minutes: int = 30
     slow_minutes: int = 60
+    new_near_miss_minutes: int = 60     # D30: a new 30-49% deal; settled listings use slow_minutes
+    census_enabled: bool = False        # D32: switched on in preflight.toml [tracker]
+    census_minutes: float = 2           # D32: one census page (5 tokens) per slot -> <= 2.5 tokens/min
+    census_max_pages: int = 40          # per category pass; a pass stops early when a short page comes back
+    census_cats: list[int] = field(default_factory=lambda: list(CENSUS_CATS))
     headline: float = 0.50              # D30: only new units at this strict discount get the fast cadence
     retry_minutes: int = 5              # D30: a failed check (0 tokens) is retried soon, doubling per failure
 
@@ -199,6 +209,7 @@ class Store(Protocol):
     def save_unit(self, u: Unit) -> None: ...
     def add_sweep_rows(self, t: float, rows: list[dict]) -> None: ...
     def add_check(self, t: float, check: dict, offers: list[dict]) -> None: ...
+    def add_census_rows(self, t: float, cat_id: int, rows: list[dict]) -> None: ...
     def save_product(self, t: float, asin: str, signals: dict) -> None: ...
 
 
@@ -212,6 +223,7 @@ class MemoryStore:
         self.sweep_rows: list[dict] = []
         self.checks: list[tuple[dict, list[dict]]] = []
         self.products: dict[str, dict] = {}
+        self.census: list[dict] = []
 
     def load(self):
         return dict(self.watch), dict(self.units), dict(self.state)
@@ -231,6 +243,9 @@ class MemoryStore:
     def add_check(self, t, check, offers):
         self.checks.append(({"t": t, **check}, offers))
 
+    def add_census_rows(self, t, cat_id, rows):
+        self.census += [{"t": t, "cat_id": cat_id, **r} for r in rows]
+
     def save_product(self, t, asin, signals):
         old = self.products.get(asin, {})
         self.products[asin] = {k: v if v is not None else old.get(k) for k, v in signals.items()}
@@ -238,13 +253,13 @@ class MemoryStore:
 
 # ---------------------------------------------------------------- the tracker
 
-def sweep_query(cfg: TrackerConfig, page: int) -> dict:
+def sweep_query(cfg: TrackerConfig, page: int, cats: list[int] | None = None) -> dict:
     return {
         "page": page, "domainId": DOMAIN_US, "priceTypes": [9], "dateRange": 0,
         "isRangeEnabled": True, "deltaPercentRange": [cfg.sweep_min_delta, 100],
         "currentRange": [cfg.sweep_min_resale_cents, 100_000_00],
         "isFilterEnabled": True, "filterErotic": True, "singleVariation": False, "sortType": 1,
-        "includeCategories": TARGET_CATS,
+        "includeCategories": cats or TARGET_CATS,
     }
 
 
@@ -258,6 +273,10 @@ class Tracker:
         self.last_sweep: float = state.get("last_sweep", 0.0)
         self.last_full_sweep: float = state.get("last_full_sweep", 0.0)
         self.fail_streak: dict[str, int] = {}
+        self.last_census: float = state.get("last_census", 0.0)
+        self.census_next: int = state.get("census_next", 0)
+        self.census_page: int = state.get("census_page", 0)
+        self.census_pass_t: float = state.get("census_pass_t", 0.0)
 
     # ---- sweeps
 
@@ -290,6 +309,45 @@ class Tracker:
         self.log(f"[{iso(t)}] {'full' if full else 'incremental'} sweep: {pages} pages, {n_rows} rows, "
                  f"watching {self.active_count()}")
         return pages
+
+    def census(self) -> int:
+        """D32: fetch ONE page of the current census category (newest first) and record what's listed;
+        nothing is watched or checked. A category's pass ends when a short page comes back or at
+        census_max_pages; then the next category starts. One page per slot keeps the census at a steady
+        <= 5 tokens per census_page_minutes and never blocks the checks for long."""
+        t = self.clock()
+        cats = self.cfg.census_cats
+        cat = cats[self.census_next % len(cats)]
+        if self.census_page == 0:
+            self.census_pass_t = t  # every page of a pass is stamped with the pass start
+        data = self.keepa.call("deal", label=f"census-{cat}-p{self.census_page}", estimate=DEAL_PAGE_COST,
+                               body=sweep_query(self.cfg, self.census_page, [cat]))
+        deals = data.get("deals") or {}
+        names = dict(zip(deals.get("categoryIds") or [], deals.get("categoryNames") or []))
+        dr = deals.get("dr") or []
+        rows = [r for r in (self._census_row(d, names) for d in dr) if r]
+        self.store.add_census_rows(self.census_pass_t, cat, rows)
+        self.census_page += 1
+        if len(dr) < DEAL_PAGE_SIZE or self.census_page >= self.cfg.census_max_pages:
+            self.log(f"[{iso(t)}] census {cat} ({names.get(cat, '?')}): pass done, {self.census_page} pages")
+            self.census_next, self.census_page = (self.census_next + 1) % len(cats), 0
+        self.last_census = t
+        for k, v in (("last_census", t), ("census_next", self.census_next), ("census_page", self.census_page),
+                     ("census_pass_t", self.census_pass_t)):
+            self.store.put_state(k, v)
+        return 1
+
+    def _census_row(self, d: dict, names: dict) -> dict | None:
+        r = analysis.deal_row(d, names, 0, source="census")
+        if not r:
+            return None
+        cur = d.get("current") or []
+        rank = cur[3] if len(cur) > 3 and cur[3] > 0 else None
+        return {"asin": r.asin, "parent": r.parent, "cat": r.root_cat, "title": r.title,
+                "resale": r.warehouse_cents, "ref": r.strict_ref_cents, "strict": r.strict,
+                "keepa_pct": r.keepa_reported, "cond": r.condition, "rank": rank,
+                "creation": d.get("creationDate"), "qualifies": qualifies(r.strict, r.strict_ref_cents, rank, self.cfg),
+                "formula": analysis.DISCOUNT_FORMULA_VERSION}
 
     def _sweep_row(self, d: dict, names: dict, t: float) -> dict | None:
         r = analysis.deal_row(d, names, 0, source="tracker")
@@ -326,7 +384,7 @@ class Tracker:
         if (w.created and t - w.created < NEW_WINDOW) or any(t - b < NEW_WINDOW for b in born):
             # D30: the fast lane is for headline deals (or a watch not yet checked); new near misses go hourly
             hot = not units or any((u.strict_last or 0) >= self.cfg.headline for u in units)
-            return (self.cfg.fast_minutes if hot else self.cfg.slow_minutes) * 60
+            return (self.cfg.fast_minutes if hot else self.cfg.new_near_miss_minutes) * 60
         if any(u.state == "unconfirmed" for u in units):
             return self.cfg.unconfirmed_minutes * 60
         return self.cfg.slow_minutes * 60
@@ -466,6 +524,9 @@ class Tracker:
         if t - self.last_sweep >= self.cfg.sweep_minutes * 60:
             self.sweep()
             return "sweep"
+        if self.cfg.census_enabled and self.cfg.census_cats and t - self.last_census >= self.cfg.census_minutes * 60:
+            self.census()
+            return "census"
         asin = self.next_check(t)
         if asin:
             self.check(asin)

@@ -50,8 +50,13 @@ def plan_lines(c: TrackerConfig) -> list[str]:
         f"TRACKER — sweep every {c.sweep_minutes} min (incremental, ~1-2 pages; full every {c.full_sweep_hours} h, "
         f"≤{c.full_sweep_max_pages} pages × 5 tokens)",
         f"  qualifies: {tiers}; sales rank ≤{c.max_rank:,}; 5 target categories",
-        f"  live checks (~{c.check_estimate} tokens): every {c.fast_minutes} min while new (<6 h), "
-        f"{c.unconfirmed_minutes} min while a unit is unconfirmed, else {c.slow_minutes} min",
+        f"  live checks (~{c.check_estimate} tokens): every {c.fast_minutes} min for new 50%+ deals (<6 h), "
+        f"{c.new_near_miss_minutes} min for new near misses, {c.unconfirmed_minutes} min while a unit is unconfirmed, "
+        f"else {c.slow_minutes} min; failed checks retried after {c.retry_minutes} min",
+        *([f"  census (D32): {len(c.census_cats)} more categories in rotation, sweep only (no checks): one page "
+           f"(5 tokens) every {c.census_minutes:g} min = at most {5 / c.census_minutes:.1f} tokens/min, "
+           f"≤{c.census_max_pages} pages per category pass; taken from settled re-checks"]
+          if c.census_enabled else []),
         f"  spends up to the plan's refill rate (~{TOKENS_PER_DAY:,} tokens/day); cadence degrades when over",
         f"  throughput: ~{checks_per_hour(c):.0f} checks/hour after sweeps. New deals (<6 h old by Keepa's date) "
         f"go first; with hundreds of older watches, expect several hours between their checks.",
@@ -109,7 +114,7 @@ def cmd_run(args, cfg) -> int:
         return 0
     store = make_store(args)
     tracker = keepa = approved_at = None
-    steps = 0
+    steps, published = 0, 0.0
     while args.max_steps is None or steps < args.max_steps:
         a = {"approvedAt": "1970", "tokenCap": 10**9} if args.fixtures else read_approval(datetime.now(timezone.utc))
         if a is None:
@@ -134,9 +139,31 @@ def cmd_run(args, cfg) -> int:
             time.sleep(120)
             continue
         steps += 1
+        if time.time() - published >= 300:  # for the status page: spend, approval, fast-lane size
+            published = time.time()
+            store.put_state("status", tracker_status(tracker, keepa, a))
         if did == "idle":
             time.sleep(5 if args.fixtures else 30)
     return 0
+
+
+def since_iso(seconds: float) -> str:
+    return datetime.fromtimestamp(time.time() - seconds, tz=timezone.utc).isoformat()
+
+
+def tracker_status(tracker, keepa, approval: dict) -> dict:
+    t = time.time()
+    last = next(iter(reversed(keepa.ledger.entries())), None)
+    active = [w for w in tracker.watch.values() if w.retired is None]
+    fast = sum(tracker.interval(w, t) == tracker.cfg.fast_minutes * 60 for w in active)
+    return {"at": t, "approved_at": approval.get("approvedAt"), "expires": approval.get("expires"),
+            "token_cap": approval.get("tokenCap"), "tokens_spent": approval.get("tokenCap", 0) - keepa.remaining_budget(),
+            "watching": len(active), "fast_lane": fast, "retrying": len(tracker.fail_streak),
+            # Keepa's real limit is a refill rate (tokens/min; unused ones expire after ~1 h), so report
+            # spend as a rate against it, not just as a share of the approval's total
+            "refill_per_min": (last or {}).get("refillRate"), "tokens_left": (last or {}).get("tokensLeft"),
+            "per_min_1h": round(keepa.ledger.spent(since_iso(3600)) / 60, 1),
+            "per_min_24h": round(keepa.ledger.spent(since_iso(86400)) / 1440, 1)}
 
 
 def cmd_status(args, cfg) -> int:

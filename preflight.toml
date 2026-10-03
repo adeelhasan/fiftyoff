@@ -130,4 +130,6 @@ max_rank = 50000
 check_estimate = 7              # observed per check in D17 (13 = two offer pages, worst case)
 fast_minutes = 15               # new watch or unit (<6 h)
 unconfirmed_minutes = 30        # a unit missing from the last check
-slow_minutes = 60
+slow_minutes = 720             # D32: settled listings every ~12 h (they were ~10 h in practice; the census takes the rest)
+census_enabled = true          # D32: sweep-only census of other root categories (fiftyoff/tracker.py CENSUS_CATS)
+census_minutes = 2             # D32: one census page (5 tokens) every 2 min, <= 2.5 tokens/min

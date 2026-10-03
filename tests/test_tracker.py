@@ -330,3 +330,22 @@ def test_priority_retries_then_fast_lane_then_most_overdue(rig):
     assert tr.next_check(clock.t) == "HOT"                  # then the fast lane
     tr.watch["HOT"].last_check = clock.t
     assert tr.next_check(clock.t) in ("OLD", "FAIL")        # then the most overdue of the rest
+
+
+def test_census_pages_one_at_a_time_rotates_and_watches_nothing(rig):
+    clock, script, store, tr, _ = rig
+    tr.cfg.census_enabled, tr.cfg.census_cats, tr.cfg.census_max_pages = True, [111, 222], 2
+    full = [deal(f"F{i}", 9000, 20000, unix_to_keepa(T0)) for i in range(150)]
+    script.pages = [full, [deal("C1", 9000, 20000, unix_to_keepa(T0)), deal("C2", 15000, 20000, unix_to_keepa(T0))]]
+    tr.last_sweep = clock.t + 10 * HOUR                      # sweeps not due
+    assert tr.step() == "census"                             # page 0 of category 111: a full page
+    assert tr.census_next == 0 and tr.census_page == 1
+    assert tr.step() != "census"                             # next page not due for 2 min
+    clock.t += 120; assert tr.step() == "census"             # page 1: short -> pass done
+    assert tr.census_next == 1 and tr.census_page == 0
+    bodies = [b for e, _, b in script.calls if e == "deal"]
+    assert [b["includeCategories"] for b in bodies] == [[111], [111]] and [b["page"] for b in bodies] == [0, 1]
+    assert len(store.census) == 152 and not tr.watch         # recorded, never watched
+    assert len({r["t"] for r in store.census}) == 1          # both pages stamped with the pass start
+    clock.t += 120; tr.step()
+    assert [b for e, _, b in script.calls if e == "deal"][-1]["includeCategories"] == [222]
