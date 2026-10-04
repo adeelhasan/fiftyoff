@@ -167,6 +167,19 @@ def lifespan(u: Unit) -> dict | None:
     return {"lower_min": lower, "upper_min": upper, "confidence": conf, "algo": UNIT_ALGO_VERSION}
 
 
+# ---------------------------------------------------------------- review hold (D35)
+
+REVIEW_REOPEN = 0.20  # an approval (curation, D36) lapses when the reference moves more than this from where it was made
+
+
+def next_review_status(prev: dict | None, reasons: list[str]) -> str | None:
+    """The rules' state only: pending (held) or cleared. None = nothing to record. Human decisions live in
+    `curation` (D36), which can approve a held deal or hide any deal."""
+    if prev is None:
+        return "pending" if reasons else None
+    return "pending" if reasons else "cleared"
+
+
 # ---------------------------------------------------------------- product signals (D28)
 
 RATING, COUNT_REVIEWS = 16, 17  # csv indexes; only present when the request asks for history
@@ -211,6 +224,8 @@ class Store(Protocol):
     def add_check(self, t: float, check: dict, offers: list[dict]) -> None: ...
     def add_census_rows(self, t: float, cat_id: int, rows: list[dict]) -> None: ...
     def save_product(self, t: float, asin: str, signals: dict) -> None: ...
+    def get_review(self, asin: str) -> dict | None: ...
+    def put_review(self, t: float, r: dict) -> None: ...
 
 
 class MemoryStore:
@@ -224,6 +239,7 @@ class MemoryStore:
         self.checks: list[tuple[dict, list[dict]]] = []
         self.products: dict[str, dict] = {}
         self.census: list[dict] = []
+        self.reviews: dict[str, dict] = {}
 
     def load(self):
         return dict(self.watch), dict(self.units), dict(self.state)
@@ -249,6 +265,13 @@ class MemoryStore:
     def save_product(self, t, asin, signals):
         old = self.products.get(asin, {})
         self.products[asin] = {k: v if v is not None else old.get(k) for k, v in signals.items()}
+
+    def get_review(self, asin):
+        return self.reviews.get(asin)
+
+    def put_review(self, t, r):
+        old = self.reviews.get(r["asin"], {})
+        self.reviews[r["asin"]] = {**old, **r, "t": t}
 
 
 # ---------------------------------------------------------------- the tracker
@@ -327,6 +350,9 @@ class Tracker:
         dr = deals.get("dr") or []
         rows = [r for r in (self._census_row(d, names) for d in dr) if r]
         self.store.add_census_rows(self.census_pass_t, cat, rows)
+        for r in rows:
+            if r["qualifies"]:  # a census deal is only ever seen qualifying or not; checks own watched ASINs
+                self._review(t, "census", r, True)
         self.census_page += 1
         if len(dr) < DEAL_PAGE_SIZE or self.census_page >= self.cfg.census_max_pages:
             self.log(f"[{iso(t)}] census {cat} ({names.get(cat, '?')}): pass done, {self.census_page} pages")
@@ -347,7 +373,8 @@ class Tracker:
                 "resale": r.warehouse_cents, "ref": r.strict_ref_cents, "strict": r.strict,
                 "keepa_pct": r.keepa_reported, "cond": r.condition, "rank": rank,
                 "creation": d.get("creationDate"), "qualifies": qualifies(r.strict, r.strict_ref_cents, rank, self.cfg),
-                "formula": analysis.DISCOUNT_FORMULA_VERSION}
+                "image": d.get("image"), "formula": analysis.DISCOUNT_FORMULA_VERSION,
+                "ref_parts": r.ref_parts, "ref_flags": r.ref_flags}
 
     def _sweep_row(self, d: dict, names: dict, t: float) -> dict | None:
         r = analysis.deal_row(d, names, 0, source="tracker")
@@ -362,7 +389,8 @@ class Tracker:
                 "resale": r.warehouse_cents, "ref": r.strict_ref_cents, "strict": r.strict,
                 "keepa_pct": r.keepa_reported, "cond": r.condition, "comment": r.condition_comment,
                 "rank": rank, "creation": d.get("creationDate"), "image": d.get("image"),
-                "qualifies": ok, "formula": analysis.DISCOUNT_FORMULA_VERSION}
+                "qualifies": ok, "formula": analysis.DISCOUNT_FORMULA_VERSION,
+                "ref_parts": r.ref_parts, "ref_flags": r.ref_flags}
 
     def _watch(self, r, rank, image, creation, t) -> None:
         w = self.watch.get(r.asin)
@@ -428,7 +456,10 @@ class Tracker:
     def apply_check(self, asin: str, p: dict, t: float, tokens: int | None = None) -> None:
         w = self.watch[asin]
         ok = bool(p.get("offersSuccessful"))
-        ref, parts = strict_ref_from_stats(p.get("stats") or {})
+        stats = p.get("stats") or {}
+        ref, parts = strict_ref_from_stats(stats)
+        windows = [stats.get(k) or [] for k in ("current", "avg", "avg30", "avg90")]
+        longer = [stats.get(k) or [] for k in ("avg180", "avg365")]
         live = set(p.get("liveOffersOrder") or [])
         offers = []
         for i, o in enumerate(p.get("offers") or []):
@@ -441,8 +472,17 @@ class Tracker:
                            "cond": CONDITIONS.get(o.get("condition", 0), str(o.get("condition"))),
                            "comment": o.get("conditionComment"), "strict": analysis.discount(price, ref)})
         best = max((o["strict"] for o in offers if o["strict"] is not None), default=None)
+        cheapest = min((o["price"] for o in offers), default=None)
+        flags = analysis.ref_flags(windows, ref, cheapest, longer)
         self.store.add_check(t, {"asin": asin, "offers_ok": ok, "ref": ref, "ref_parts": parts, "best": best,
-                                 "tokens": tokens, "formula": CHECK_FORMULA_VERSION}, offers)
+                                 "tokens": tokens, "formula": CHECK_FORMULA_VERSION,
+                                 "ref_flags": flags}, offers)
+        if ok:
+            top = min(offers, key=lambda o: o["price"]) if offers else None
+            self._review(t, "check", {"asin": asin, "title": w.title, "image": w.image, "cond": top and top["cond"],
+                                      "resale": cheapest, "ref": ref, "strict": analysis.discount(cheapest, ref),
+                                      "ref_parts": parts, "ref_flags": flags},
+                         any(qualifies(o["strict"], ref, w.rank, self.cfg) for o in offers))
         try:  # ranking signals are a nice-to-have; an odd product must never stop the tracker
             self.store.save_product(t, asin, product_signals(p))
         except Exception as e:  # noqa: BLE001
@@ -511,6 +551,19 @@ class Tracker:
                 or (units and not open_units and quiet >= RETIRE_AFTER_GONE) \
                 or quiet >= RETIRE_STALE:
             w.retired = t
+
+    def _review(self, t: float, layer: str, row: dict, qualifying: bool) -> None:
+        """D35: hold a qualifying deal whose reference looks wrong until the user decides."""
+        reasons = analysis.review_reasons(row.get("ref_flags"), row.get("strict")) if qualifying else []
+        try:
+            prev = self.store.get_review(row["asin"])
+            if prev is None and not reasons:
+                return
+            st = next_review_status(prev, reasons)
+            self.store.put_review(t, {**row, "status": st, "layer": layer, "reasons": reasons,
+                                      "rules": analysis.REVIEW_RULES_VERSION})
+        except Exception as e:  # noqa: BLE001 — the hold is a safety net; it must never stop the tracker
+            self.log(f"  {row['asin']}: review skipped ({e!r})")
 
     # ---- loop
 

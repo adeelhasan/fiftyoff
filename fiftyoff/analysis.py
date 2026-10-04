@@ -15,6 +15,7 @@ from .keepa import (
     CONDITIONS,
     EXTRA_INFO_UPDATES,
     NEW,
+    USED,
     WAREHOUSE,
     decode_csv,
     decode_offer_csv,
@@ -56,6 +57,66 @@ def discount(price: int | None, ref: int | None) -> float | None:
     return 1 - price / ref
 
 
+# ---------------------------------------------------------------- reference trust (D34)
+
+# Flags only: they don't change `strict` or what the feed shows until the user picks a policy (D34).
+REF_FLAGS_VERSION = "f0.2"  # f0.2: Amazon's 180/365-day averages count, where a check has them
+SALES_RANK, LIST_PRICE, REFURBISHED, COUNT_NEW, COUNT_REVIEWS = 3, 4, 6, 11, 17  # csv indexes (also stats/deal arrays)
+REF_ABOVE_LIST = 1.10   # reference > 110% of the list price
+REF_VS_REFURB = 2.5     # reference > 2.5x the cheapest refurbished price
+THIN_MAX_REVIEWS = 50   # thin = third-party-only reference, < 50 reviews and no sales rank
+
+# D35 review hold: a held deal stays out of the feed until the user approves it.
+REVIEW_RULES_VERSION = "r0.1"
+TOO_GOOD = 0.70         # a discount this deep with no Amazon price behind it needs a human look
+
+
+def _first_pos(windows: list, i: int) -> int | None:
+    """The newest positive value at index i: windows are ordered current, then shorter-to-longer averages."""
+    for w in windows:
+        v = _at(w, i)
+        if isinstance(v, int) and v > 0:
+            return v
+    return None
+
+
+def ref_flags(windows: list, ref: int | None, resale: int | None, longer: list = ()) -> dict:
+    """Why a reference price might not be the market price (REF_FLAGS_VERSION). `windows` is
+    [current, avg...] in Keepa's csv index layout: a deal object's `current` + `avg`, or a product's
+    stats current/avg/avg30/avg90. `longer` adds windows that only count as Amazon evidence (a
+    check's avg180/avg365). Returns the flags plus the evidence behind them, for replay."""
+    lst, refurb = _first_pos(windows, LIST_PRICE), _first_pos(windows, REFURBISHED)
+    reviews, used = _at(windows[0], COUNT_REVIEWS), _at(windows[0], USED)
+    rank, n_new = _at(windows[0], SALES_RANK), _at(windows[0], COUNT_NEW)
+    amazon = _first_pos([*windows, *longer], AMAZON)
+    tp_only = amazon is None
+    flags = []
+    if tp_only:
+        flags.append("third_party_only")
+    if ref and lst and ref > lst * REF_ABOVE_LIST:
+        flags.append("above_list")
+    if ref and refurb and ref > refurb * REF_VS_REFURB:
+        flags.append("vs_refurb")
+    if tp_only and (reviews is None or reviews < THIN_MAX_REVIEWS) and not (rank and rank > 0):
+        flags.append("thin")
+    if resale and used and 0 < used < resale:
+        flags.append("used_cheaper")  # informational: a non-Resale used offer undercuts the Resale unit
+    pos = lambda v: v if isinstance(v, int) and v >= 0 else None
+    return {"v": REF_FLAGS_VERSION, "flags": flags,
+            "suspect": any(f in flags for f in ("above_list", "vs_refurb", "thin")),
+            "list": lst, "refurb": refurb, "used": pos(used), "reviews": pos(reviews), "new_offers": pos(n_new), "amazon": amazon}
+
+
+def review_reasons(flags: dict | None, strict: float | None) -> list[str]:
+    """Why a qualifying deal is held for review (REVIEW_RULES_VERSION). Empty = list it."""
+    if not flags:
+        return []
+    out = [f for f in flags.get("flags", []) if f in ("above_list", "vs_refurb", "thin")]
+    if "third_party_only" in flags.get("flags", []) and (strict or 0) >= TOO_GOOD:
+        out.append("too_good")
+    return out
+
+
 # ---------------------------------------------------------------- census (deal objects)
 
 @dataclass
@@ -74,6 +135,8 @@ class DealRow:
     keepa_reported: int | None  # Keepa's own deltaPercent for WAREHOUSE in the queried range
     keepa_ref_match: str | None  # which of our candidates Keepa's number matches (±2 pts)
     source: str = ""  # census query that produced the row
+    ref_parts: dict = field(default_factory=dict)  # the reference candidates that were available
+    ref_flags: dict = field(default_factory=dict)  # REF_FLAGS_VERSION (D34)
 
 
 def deal_row(d: dict, cat_names: dict[int, str], date_range: int, source: str = "") -> DealRow | None:
@@ -116,6 +179,8 @@ def deal_row(d: dict, cat_names: dict[int, str], date_range: int, source: str = 
         keepa_reported=reported,
         keepa_ref_match=match,
         source=source,
+        ref_parts={k: v for k, v in refs.items() if v is not None and v > 0},
+        ref_flags=ref_flags([cur, *avg], refs[strict_key] if strict_key else None, wh),
     )
 
 

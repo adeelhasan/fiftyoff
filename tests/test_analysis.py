@@ -99,3 +99,37 @@ def test_resale_profile_on_fixture():
     assert r.episodes[0.5] == 3 and r.units_seen == 1 and r.units_gone == 1
     assert 0 < r.presence_share < 0.1  # three short-ish episodes plus the $120 tail
     assert r.live_resale is False
+
+
+# ---------------------------------------------------------------- reference trust (D34)
+# Synthetic deal-object arrays (23 indexes) shaped like two real 2026-10-04 cases: a third-party-only New
+# reference far above the market, reaching the preview at 78-82% off. Not Keepa data (D18: the repo is public).
+
+TI84_CUR = [-1, 31999, 3700, -1, 17500, -1, 8200, 31999, -1, 5650, 32001, 4, 37, 3, -1, -41, 44, 1290, 31999, 5650, 5250, 3700, 5100]
+TI84_AVG90 = [-1, 31250, 3710, -1, 17500, -1, 8300, 31990, -2, 5600, 31245, 2, 39, 3, -1, 40, 44, 1295, 31400, 8500, 5250, 3770, 4300]
+JABRA_CUR = [-1, 21499, 4790, -1, -1, -1, -1, 21499, -1, 4790, -1, 3, 1, -1, -1, 4, 44, 11, -1, 4790, -1, -1, -1]
+JABRA_AVG30 = [-2, 21430, 4660, -1, 23790, -2, -2, 21430, -2, 4830, -2, 3, 2, -2, -2, 4, 49, 10, -1, 4830, -2, -2, -2]
+
+
+def test_ref_flags_discontinued_item_priced_above_list_and_refurb():
+    f = analysis.ref_flags([TI84_CUR, TI84_AVG90], 31250, 5650)
+    assert {"third_party_only", "above_list", "vs_refurb", "used_cheaper"} <= set(f["flags"])
+    assert "thin" not in f["flags"]  # 1,290 reviews: it's the price that's wrong, not the evidence
+    assert f["suspect"] and f["list"] == 17500 and f["refurb"] == 8200
+
+
+def test_ref_flags_obscure_listing_with_one_seller_price():
+    f = analysis.ref_flags([JABRA_CUR, JABRA_AVG30], 21350, 4790)
+    assert f["flags"] == ["third_party_only", "thin"]  # list price $237.90 is above the reference
+    assert f["suspect"] and f["reviews"] == 11 and f["list"] == 23790
+
+
+def test_ref_flags_amazon_priced_item_is_clean():
+    cur = [20000, 21000, 15000, 900, 22000, -1, -1] + [-1] * 10 + [800]
+    f = analysis.ref_flags([cur], 20000, 9000)
+    assert f["flags"] == [] and not f["suspect"]
+
+
+def test_deal_row_carries_ref_parts_and_flags():
+    r = _rows()["B0KITCHEN1"]
+    assert r.ref_parts["amazon_now"] == 21500 and r.ref_flags["v"] == analysis.REF_FLAGS_VERSION

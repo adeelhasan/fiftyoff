@@ -69,9 +69,12 @@ services:
     command: ["uvicorn", "fiftyoff.api:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers"]
     restart: unless-stopped
     environment:
-      # read-only role: SELECT on the feed view only (created by scripts/feed-reader.sh)
+      # narrow role: feed + admin views, curation writes only (created by scripts/feed-reader.sh)
       FEED_DATABASE_URL: postgresql://feed_reader:${FEED_READER_PASSWORD:-feed-dev}@db:5432/fiftyoff
       PREVIEW_PASSWORD: ${PREVIEW_PASSWORD:-}   # set -> browser login popup (user "fiftyoff"); empty -> open
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}       # set -> /admin opens to user "admin" (D36); empty -> closed
+    volumes:
+      - ./preflight.toml:/app/preflight.toml:ro   # [admin] tags
     ports:
       - "127.0.0.1:8000:8000"   # localhost only; reach it over an SSH tunnel or a Cloudflare Tunnel
     depends_on:

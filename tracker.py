@@ -6,6 +6,8 @@
     uv run tracker.py status             # free, from Postgres
     uv run tracker.py report             # free, from Postgres -> research/tracker/report.md
     uv run tracker.py backfill-products  # free: product signals (D28) from the saved raw check responses
+    uv run tracker.py replay-ref-flags   # free: reference-trust flags (D34) over the raw archive -> research/tracker/
+    uv run tracker.py backfill-review    # free: seed the D35 review hold from the latest raw observations
 
 The approval file (.fiftyoff/tracker-approval.json, gitignored) carries a token cap and an expiry.
 Without a valid one, `run` waits and re-checks every 10 min instead of exiting, so a container
@@ -15,6 +17,7 @@ restart policy can't crash-loop it, and it never spends a token unapproved (CLAU
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import json
 import os
 import time
@@ -239,6 +242,49 @@ def cmd_backfill_products(args, cfg) -> int:
     return 0
 
 
+def cmd_replay_ref_flags(args, cfg) -> int:
+    """D34: size the strict vs flag policies from the raw archive. Writes a report and one row per ASIN."""
+    from fiftyoff import refreplay
+    md, rows = refreplay.report(Path(args.root, "raw"), TrackerConfig.from_toml(cfg.get("tracker", {})), args.hours, tuple(args.asin or ()))
+    out = Path(args.root) / "ref-flags-replay.md"
+    out.write_text(md)
+    with open(out.with_suffix(".jsonl"), "w") as f:
+        for r in rows:
+            f.write(json.dumps(r) + "\n")
+    print(md[:3000])
+    print(f"wrote {out} and {out.with_suffix('.jsonl')}")
+    return 0
+
+
+def cmd_backfill_review(args, cfg) -> int:
+    """D35: apply the review hold to the newest raw observation per ASIN (last --hours), so deals already
+    listed are held now rather than at their next check. Same status rules as the tracker."""
+    from fiftyoff import analysis, refreplay
+    from fiftyoff.store_pg import PgStore
+    from fiftyoff.tracker import next_review_status
+    c = TrackerConfig.from_toml(cfg.get("tracker", {}))
+    s = PgStore(dsn())
+    checks, census, _ = refreplay.latest(Path(args.root, "raw"), c, args.hours)
+    watch = {r[0]: r[1:] for r in s.conn.execute("SELECT asin, title, image FROM watch").fetchall()}
+    n = Counter()
+    for layer, obs in (("census", census), ("check", checks)):  # checks last: they win for a shared ASIN
+        for a, o in obs.items():
+            reasons = analysis.review_reasons(o["f"], o["strict"]) if o["qualifies"] else []
+            prev = s.get_review(a)
+            if prev is None and not reasons:
+                continue
+            title, image = watch.get(a, (o["title"], None))
+            st = next_review_status(prev, reasons)
+            s.put_review(o["t"], {"asin": a, "status": st, "layer": layer, "reasons": reasons,
+                                  "rules": analysis.REVIEW_RULES_VERSION, "title": title or o["title"],
+                                  "image": image, "cond": o.get("cond"), "resale": o["resale"], "ref": o["ref"],
+                                  "strict": o["strict"], "ref_flags": o["f"], "ref_parts": o["parts"]})
+            n[(layer, st)] += 1
+    s.conn.commit()
+    print("review backfill:", dict(n))
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--config", default="preflight.toml")
@@ -255,10 +301,15 @@ def main(argv=None) -> int:
     sub.add_parser("status")
     sub.add_parser("report")
     sub.add_parser("backfill-products")
+    rp = sub.add_parser("replay-ref-flags")
+    rp.add_argument("--hours", type=float, default=24, help="newest observation per ASIN in this window")
+    rp.add_argument("--asin", action="append", help="call out these ASINs in the report")
+    sub.add_parser("backfill-review").add_argument("--hours", type=float, default=24)
     args = ap.parse_args(argv)
     cfg = preflight.load_config(Path(args.config))
     return {"unlock": cmd_unlock, "run": cmd_run, "status": cmd_status, "report": cmd_report,
-            "backfill-products": cmd_backfill_products}[args.cmd](args, cfg)
+            "backfill-products": cmd_backfill_products, "replay-ref-flags": cmd_replay_ref_flags,
+            "backfill-review": cmd_backfill_review}[args.cmd](args, cfg)
 
 
 if __name__ == "__main__":

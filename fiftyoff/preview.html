@@ -86,6 +86,8 @@ input[type=checkbox] { accent-color: var(--accent); width: 16px; height: 16px; m
 .flag { position: absolute; left: 8px; bottom: 8px; font-size: 11px; font-weight: 700; border-radius: 4px; padding: 2px 6px }
 .flag.many { background: var(--accent); color: #fff }
 .flag.new { background: var(--good); color: #fff; left: 8px; top: 8px; bottom: auto }
+.flag.explore { background: var(--surface); color: var(--muted); border: 1px dashed var(--muted); left: 8px; top: 8px; bottom: auto }
+.card.unverified { border-style: dashed }
 .flag.near { background: var(--warn-soft); color: var(--warn); left: auto; right: 8px }
 .card .body { padding: 12px 14px 14px; display: grid; gap: 8px; align-content: start }
 .nums { display: flex; align-items: baseline; gap: 10px; font-variant-numeric: tabular-nums }
@@ -126,7 +128,7 @@ footer a { color: inherit }
       <h1 class="mark">fifty<span>off</span></h1>
       <p class="lede">Amazon Resale units at a genuine half off: measured against the lowest recent New price, not the list price. Most are one of a kind, so they go.</p>
     </div>
-    <span class="chip">Closed preview · <a href="/closed-preview/status">status</a></span>
+    <span class="chip">Closed preview · <a href="/closed-preview/status">status</a> · <a href="/admin/">admin</a></span>
   </header>
 
   <section aria-labelledby="missed-h" id="missed" hidden>
@@ -139,11 +141,7 @@ footer a { color: inherit }
     <div class="controls">
       <input type="search" id="q" placeholder="Search deals" aria-label="Search deals">
       <label for="cat">Category
-        <select id="cat">
-          <option value="">All</option>
-          <option>Electronics</option><option>Home &amp; Kitchen</option><option>Appliances</option>
-          <option>Tools &amp; Home Improvement</option><option>Sports &amp; Outdoors</option>
-        </select>
+        <select id="cat"><option value="">All</option></select>
       </label>
       <label for="sort">Sort
         <select id="sort">
@@ -161,6 +159,7 @@ footer a { color: inherit }
           <option value="all">Everything (incl. may be gone)</option>
         </select>
       </label>
+      <label title="Categories we only scan (D32 census): seen in Keepa's deal feed, not live-checked by us"><input type="checkbox" id="explore" checked> More categories (explore)</label>
       <label><input type="checkbox" id="near"> Near misses (30–49%)</label>
       <label><input type="checkbox" id="acc"> Include “Acceptable”</label>
       <span class="count" id="count" aria-live="polite">Loading deals…</span>
@@ -174,7 +173,7 @@ footer a { color: inherit }
   <ol class="grid" id="deals"></ol>
 
   <footer>
-    <span>Deal score (0–100) weighs discount, condition, how popular the product is, and dollars saved. "Confirmed" is our last live check; prices change quickly. Deals we haven't confirmed recently enough (hot ones fade within hours) are held back unless you choose "Everything". "Gone" means our checks stopped finding it.</span>
+    <span>Deal score (0–100) weighs discount, condition, how popular the product is, and dollars saved. "Confirmed" is our last live check; prices change quickly. Deals we haven't confirmed recently enough (hot ones fade within hours) are held back unless you choose "Everything". Dashed "Explore" cards come from categories we only scan: seen in Keepa's deal feed, not live-checked. "Gone" means our checks stopped finding it.</span>
     <a href="https://keepa.com" rel="noopener" target="_blank">Data by Keepa</a>
   </footer>
 </main>
@@ -201,15 +200,16 @@ function scoreBox(score, s, c) {
 function card(p) {
   const u0 = p.units[0];
   const c = p.confidence;
-  const seen = (c.label === "LOW" ? "May be gone · " : "") +
-    (u0.unconfirmed ? `Not seen since ${ago(p.minutes_since_confirmed)}` : `Confirmed ${ago(p.minutes_since_confirmed)}`);
+  const seen = (c.label === "LOW" ? "May be gone · " : "") + (!p.verified
+    ? `Seen in Keepa's feed ${ago(p.minutes_since_confirmed)} · not live-checked`
+    : u0.unconfirmed ? `Not seen since ${ago(p.minutes_since_confirmed)}` : `Confirmed ${ago(p.minutes_since_confirmed)}`);
   const conds = [...new Set(p.units.map((u) => u.condition))];
   const more = p.unit_count > 1 ? `<details><summary>${p.unit_count} units from ${usd(p.price)}</summary><ul>${
     p.units.map((u) => `<li><span>${esc(short(u.condition))}</span><span>${u.pct_off}% · ${usd(u.price)}</span></li>`).join("")}</ul></details>` : "";
-  return `<li class="card">
+  return `<li class="card${p.verified ? "" : " unverified"}">
     <div class="pic"><a href="${esc(p.url)}" rel="noopener" target="_blank" tabindex="-1" aria-hidden="true">${img(p.image, 400, "")}</a>
       ${scoreBox(p.score, p.score_parts, c)}
-      ${c.label === "LOW" ? `<span class="flag maybe">May be gone</span>` : p.is_new ? `<span class="flag new" title="Priced ${ago(p.minutes_since_priced)}">New</span>` : ""}
+      ${c.label === "LOW" ? `<span class="flag maybe">May be gone</span>` : !p.verified ? `<span class="flag explore" title="From the category census: not live-checked">Explore</span>` : p.is_new ? `<span class="flag new" title="Priced ${ago(p.minutes_since_priced)}">New</span>` : ""}
       ${p.unit_count > 1 ? `<span class="flag many">${p.unit_count} units</span>` : ""}
       ${p.near_miss ? `<span class="flag near">Near miss</span>` : ""}</div>
     <div class="body">
@@ -249,6 +249,7 @@ let timer;
 async function load() {
   const q = new URLSearchParams({ sort: $("sort").value, limit: "200", tier: $("near").checked ? "all" : "50", conf: $("conf").value });
   if (freshOnly) q.set("fresh", "true");
+  if ($("explore").checked) q.set("explore", "true");
   if ($("cat").value) q.set("category", $("cat").value);
   if ($("acc").checked) q.set("acceptable", "true");
   if ($("q").value.trim()) q.set("q", $("q").value.trim());
@@ -259,6 +260,7 @@ async function load() {
     const d = await r.json();
     if (!q.has("q") && !freshOnly) { counts = d.products.map((p) => p.title.toLowerCase()); newCount = d.products.filter((p) => p.is_new).length; }
     renderChips();
+    renderCats(d.categories);
     $("deals").innerHTML = d.products.length ? d.products.map(card).join("")
       : `<li class="empty">No deals match. Try near misses, another category, or a shorter search.</li>`;
     $("count").textContent = `${d.count} product${d.count === 1 ? "" : "s"} · ${d.units} units` +
@@ -267,7 +269,7 @@ async function load() {
     $("deals").innerHTML = `<li class="error">Couldn't load deals (${esc(e.message)}). The API may be restarting; this page retries every minute.</li>`;
   }
 }
-["cat", "sort", "conf", "near", "acc"].forEach((id) => $(id).addEventListener("change", load));
+["cat", "sort", "conf", "explore", "near", "acc"].forEach((id) => $(id).addEventListener("change", load));
 // Quick keywords: tap to filter, tap again to clear. Counts come from the last unfiltered load, and a
 // keyword with no current deals is hidden. The keyword lives in the URL (?q=rug) so a view can be bookmarked.
 const KEYWORDS = ["Rug", "Speaker", "Headphones", "TV", "Monitor", "Laptop", "iPad", "Camera", "Router",
@@ -286,6 +288,16 @@ $("chips").addEventListener("click", (e) => {
   $("q").value = b.getAttribute("aria-pressed") === "true" ? "" : b.dataset.k;
   syncUrl(); load(); loadGone();
 });
+// Category list comes from the data: the five live-checked categories, then census ones as they arrive.
+function renderCats(cats) {
+  const sel = $("cat"), cur = sel.value;
+  const opt = (c) => `<option value="${esc(c.name)}"${c.name === cur ? " selected" : ""}>${esc(c.name)} (${c.units})</option>`;
+  const ver = cats.filter((c) => c.verified), exp = cats.filter((c) => !c.verified);
+  if (cur && !cats.some((c) => c.name === cur)) ver.push({ name: cur, units: 0, verified: true });
+  sel.innerHTML = `<option value="">All</option>` + (ver.length ? `<optgroup label="Live-checked">${ver.map(opt).join("")}</optgroup>` : "") +
+    (exp.length ? `<optgroup label="Explore: not live-checked">${exp.map(opt).join("")}</optgroup>` : "");
+}
+
 function syncUrl() {
   const u = new URL(location.href);
   $("q").value.trim() ? u.searchParams.set("q", $("q").value.trim()) : u.searchParams.delete("q");

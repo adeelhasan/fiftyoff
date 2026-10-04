@@ -52,12 +52,65 @@ CREATE TABLE IF NOT EXISTS units (
   PRIMARY KEY (asin, offer_id)
 );
 ALTER TABLE units ADD COLUMN IF NOT EXISTS keepa_first_seen_at timestamptz;
+-- D34: reference-trust flags (REF_FLAGS_VERSION) and, for deal rows, the reference candidates
+ALTER TABLE checks ADD COLUMN IF NOT EXISTS ref_flags jsonb;
+ALTER TABLE sweep_rows ADD COLUMN IF NOT EXISTS ref_parts jsonb;
+ALTER TABLE sweep_rows ADD COLUMN IF NOT EXISTS ref_flags jsonb;
 
 -- Demand signals for the internal deal score (D28). Never exposed by the API (D19).
 CREATE TABLE IF NOT EXISTS product (
   asin text PRIMARY KEY, brand text, cat_path text[], reviews int, rating real, drops30 int, drops90 int,
   monthly_sold int, amazon_sells bool, rank int, updated_at timestamptz NOT NULL
 );
+
+-- D35 review hold: the rules' state. pending (held) or cleared (the reasons went away). The user's
+-- decisions live in `curation` (D36). decided_at / decided_ref_cents / note are D35 leftovers, kept for history.
+CREATE TABLE IF NOT EXISTS review (
+  asin text PRIMARY KEY, status text NOT NULL, layer text NOT NULL, reasons jsonb NOT NULL, rules text,
+  title text, image text, cond text, resale_cents int, ref_cents int, strict real, ref_flags jsonb, ref_parts jsonb,
+  first_held_at timestamptz NOT NULL, updated_at timestamptz NOT NULL,
+  decided_at timestamptz, decided_ref_cents int, note text
+);
+
+-- D36 curation: the admin's decision per ASIN (fiftyoff/curation.py). auto = the rules decide; approved =
+-- listed even if held, while the reference stays within 20% of decided_ref_cents; hidden = never listed.
+CREATE TABLE IF NOT EXISTS curation (
+  asin text PRIMARY KEY, visibility text NOT NULL DEFAULT 'auto' CHECK (visibility IN ('auto', 'approved', 'hidden')),
+  tags text[] NOT NULL DEFAULT '{}', note text, decided_ref_cents int,
+  updated_at timestamptz NOT NULL, updated_by text NOT NULL
+);
+-- Append-only: the audit trail, and labelled data for tuning the review rules.
+CREATE TABLE IF NOT EXISTS curation_log (
+  id bigserial PRIMARY KEY, asin text NOT NULL, field text NOT NULL, old text, new text,
+  by text NOT NULL, at timestamptz NOT NULL
+);
+CREATE INDEX IF NOT EXISTS curation_log_asin ON curation_log (asin, at);
+
+-- D36 migration (a no-op once done): D35 decisions move to curation; review keeps the rules' state only.
+INSERT INTO curation_log (asin, field, old, new, by, at)
+SELECT asin, 'visibility', 'auto', CASE status WHEN 'approved' THEN 'approved' ELSE 'hidden' END, 'migration',
+       coalesce(decided_at, now())
+FROM review WHERE status IN ('approved', 'rejected') AND asin NOT IN (SELECT asin FROM curation);
+INSERT INTO curation (asin, visibility, note, decided_ref_cents, updated_at, updated_by)
+SELECT asin, CASE status WHEN 'approved' THEN 'approved' ELSE 'hidden' END, note,
+       CASE status WHEN 'approved' THEN decided_ref_cents END, coalesce(decided_at, now()), 'migration'
+FROM review WHERE status IN ('approved', 'rejected')
+ON CONFLICT (asin) DO NOTHING;
+UPDATE review SET status = CASE WHEN reasons = '[]'::jsonb THEN 'cleared' ELSE 'pending' END
+WHERE status IN ('approved', 'rejected');
+
+-- The one listing predicate (mirrors fiftyoff/curation.py `listed`): an ASIN is out of every feed view when
+-- hidden, or held by the rules without an approval whose reference is still within 20% (REVIEW_REOPEN;
+-- keep in sync). No baseline (decided_ref_cents NULL) fails closed.
+CREATE OR REPLACE VIEW unlisted AS
+SELECT asin, 'hidden' AS why FROM curation WHERE visibility = 'hidden'
+UNION ALL
+SELECT r.asin, CASE WHEN c.visibility = 'approved' THEN 'approval_lapsed' ELSE 'held' END
+FROM review r LEFT JOIN curation c USING (asin)
+WHERE r.status = 'pending' AND coalesce(c.visibility, 'auto') <> 'hidden'
+  -- coalesce: no curation row or no baseline gives NULL, which must count as "not approved", not drop the row
+  AND NOT coalesce(c.visibility = 'approved' AND c.decided_ref_cents > 0 AND r.ref_cents > 0
+                   AND abs(r.ref_cents - c.decided_ref_cents)::real / c.decided_ref_cents <= 0.20, false);
 
 -- Public deal feed: D19-consented columns only (title, link, our % off, condition, current Resale
 -- price) plus our own "last confirmed" time. Show with a "Data by Keepa" link to keepa.com.
@@ -69,7 +122,8 @@ SELECT u.asin, w.title, w.category, w.image, u.cond, u.last_price_cents AS resal
 FROM units u JOIN watch w USING (asin)
 WHERE u.state <> 'gone' AND w.retired_at IS NULL
   -- tiers mirror TrackerConfig.tiers (preflight.toml [tracker]); keep in sync
-  AND ((u.strict_last >= 0.40 AND u.ref_last_cents >= 10000) OR (u.strict_last >= 0.30 AND u.ref_last_cents >= 20000));
+  AND ((u.strict_last >= 0.40 AND u.ref_last_cents >= 10000) OR (u.strict_last >= 0.30 AND u.ref_last_cents >= 20000))
+  AND NOT EXISTS (SELECT 1 FROM unlisted x WHERE x.asin = u.asin);  -- D36
 
 -- Internal views the API reads (as feed_reader) to score, group and filter. They carry signals the
 -- API must not emit (reference price, reviews, rank...): fiftyoff/api.py picks the public fields.
@@ -80,7 +134,8 @@ SELECT u.asin, u.offer_id, w.title, w.category, w.image, u.cond, u.last_price_ce
        p.brand, p.cat_path, p.reviews, p.rating, p.drops30, p.monthly_sold, p.amazon_sells, p.rank,
        w.created_at AS priced_at  -- Keepa's creationDate: when the deal's current Resale price was set
 FROM units u JOIN watch w USING (asin) LEFT JOIN product p USING (asin)
-WHERE u.state <> 'gone' AND w.retired_at IS NULL AND ((u.strict_last >= 0.40 AND u.ref_last_cents >= 10000) OR (u.strict_last >= 0.30 AND u.ref_last_cents >= 20000));
+WHERE u.state <> 'gone' AND w.retired_at IS NULL AND ((u.strict_last >= 0.40 AND u.ref_last_cents >= 10000) OR (u.strict_last >= 0.30 AND u.ref_last_cents >= 20000))
+  AND NOT EXISTS (SELECT 1 FROM unlisted x WHERE x.asin = u.asin);  -- D36
 
 -- D32 census: supply in other categories, sweep-only (no watches, no checks).
 CREATE TABLE IF NOT EXISTS census_rows (
@@ -89,6 +144,25 @@ CREATE TABLE IF NOT EXISTS census_rows (
   cond text, rank int, creation_kmin int, qualifies bool, formula text
 );
 CREATE INDEX IF NOT EXISTS census_rows_cat ON census_rows (cat_id, swept_at);
+ALTER TABLE census_rows ADD COLUMN IF NOT EXISTS image text;
+ALTER TABLE census_rows ADD COLUMN IF NOT EXISTS ref_parts jsonb;
+ALTER TABLE census_rows ADD COLUMN IF NOT EXISTS ref_flags jsonb;
+
+-- Census deals for the preview's "explore" layer (D33): the latest pass per category, qualifying
+-- listings only, shaped like deal_internal. Seen in Keepa's deal feed at swept_at, never live-checked.
+CREATE OR REPLACE VIEW census_deal AS
+WITH last AS (SELECT cat_id, max(swept_at) AS swept_at FROM census_rows GROUP BY cat_id)
+SELECT DISTINCT ON (c.asin, c.cond, c.resale_cents)
+       c.asin, NULL::bigint AS offer_id, c.title, c.category, c.image, c.cond, c.resale_cents, c.ref_cents,
+       c.strict, c.swept_at AS last_confirmed_at, false AS unconfirmed,
+       NULL::timestamptz AS keepa_first_seen_at, NULL::timestamptz AS first_seen_at,
+       NULL::text AS brand, NULL::text[] AS cat_path, NULL::int AS reviews, NULL::real AS rating,
+       NULL::int AS drops30, NULL::int AS monthly_sold, NULL::bool AS amazon_sells, c.rank,
+       to_timestamp((c.creation_kmin + 21564000) * 60.0) AS priced_at, c.cat_id
+FROM census_rows c JOIN last USING (cat_id, swept_at)
+WHERE c.qualifies
+  AND NOT EXISTS (SELECT 1 FROM unlisted x WHERE x.asin = c.asin)  -- D36
+ORDER BY c.asin, c.cond, c.resale_cents, c.id DESC;
 
 -- Latest pass per category, one row per listing (ASIN + condition + price), summarised. ASIN-level counts.
 CREATE OR REPLACE VIEW census_summary AS
@@ -140,12 +214,33 @@ SELECT u.asin, u.offer_id, w.title, w.category, w.image, u.cond, u.last_price_ce
        p.brand, p.cat_path, p.reviews, p.rating, p.drops30, p.monthly_sold, p.amazon_sells, p.rank,
        u.first_seen_at, u.appeared_after_at, u.keepa_first_seen_at, u.absent_since_at, u.revivals
 FROM units u JOIN watch w USING (asin) LEFT JOIN product p USING (asin)
-WHERE u.state = 'gone' AND u.gone_at > now() - interval '7 days' AND ((u.strict_last >= 0.40 AND u.ref_last_cents >= 10000) OR (u.strict_last >= 0.30 AND u.ref_last_cents >= 20000));
+WHERE u.state = 'gone' AND u.gone_at > now() - interval '7 days' AND ((u.strict_last >= 0.40 AND u.ref_last_cents >= 10000) OR (u.strict_last >= 0.30 AND u.ref_last_cents >= 20000))
+  AND NOT EXISTS (SELECT 1 FROM unlisted x WHERE x.asin = u.asin);  -- D36
+
+-- Admin (D36): the review queue with the curation decision and whether the ASIN is listed now.
+CREATE OR REPLACE VIEW review_queue AS
+SELECT r.asin, r.status, r.layer, r.reasons, r.rules, r.title, r.image, r.cond, r.resale_cents, r.ref_cents,
+       r.strict, r.ref_flags, r.ref_parts, r.first_held_at, r.updated_at,
+       coalesce(c.visibility, 'auto') AS visibility, coalesce(c.tags, '{}') AS tags, c.note,
+       c.decided_ref_cents, c.updated_at AS decided_at, c.updated_by AS decided_by,
+       x.why AS unlisted_why, x.asin IS NULL AS listed
+FROM review r LEFT JOIN curation c USING (asin) LEFT JOIN unlisted x USING (asin);
+
+-- Admin (D36): every curated ASIN, with a title from the review queue or the watch list.
+CREATE OR REPLACE VIEW curation_admin AS
+SELECT c.asin, c.visibility, c.tags, c.note, c.decided_ref_cents, c.updated_at, c.updated_by,
+       coalesce(r.title, w.title) AS title, coalesce(r.image, w.image) AS image, r.status AS review_status,
+       r.reasons, r.ref_cents, r.resale_cents, r.strict, x.why AS unlisted_why, x.asin IS NULL AS listed
+FROM curation c LEFT JOIN review r USING (asin) LEFT JOIN watch w USING (asin) LEFT JOIN unlisted x USING (asin);
 """
 
 
 def _ts(t: float | None):
     return None if t is None else datetime.fromtimestamp(t, tz=timezone.utc)
+
+
+def _json(v) -> str | None:
+    return None if v is None else json.dumps(v)
 
 
 def _f(d: datetime | None) -> float | None:
@@ -211,11 +306,11 @@ class PgStore:
         with self.conn.cursor() as cur:
             cur.executemany(
                 "INSERT INTO sweep_rows (swept_at, asin, parent_asin, category, title, resale_cents, ref_cents, strict, "
-                "keepa_pct, cond, comment, rank, creation_kmin, image, qualifies, formula) "
-                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                "keepa_pct, cond, comment, rank, creation_kmin, image, qualifies, formula, ref_parts, ref_flags) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                 [(_ts(t), r["asin"], r["parent"], r["cat"], r["title"], r["resale"], r["ref"], r["strict"],
                   r["keepa_pct"], r["cond"], r["comment"], r["rank"], r["creation"], r["image"], r["qualifies"],
-                  r["formula"]) for r in rows])
+                  r["formula"], _json(r.get("ref_parts")), _json(r.get("ref_flags"))) for r in rows])
 
     def save_product(self, t, asin, sig):
         cols = list(sig)
@@ -231,17 +326,38 @@ class PgStore:
         with self.conn.cursor() as cur:
             cur.executemany(
                 "INSERT INTO census_rows (swept_at, cat_id, asin, parent_asin, category, title, resale_cents, ref_cents, "
-                "strict, keepa_pct, cond, rank, creation_kmin, qualifies, formula) "
-                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                "strict, keepa_pct, cond, rank, creation_kmin, qualifies, formula, image, ref_parts, ref_flags) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                 [(_ts(t), cat_id, r["asin"], r["parent"], r["cat"], r["title"], r["resale"], r["ref"], r["strict"],
-                  r["keepa_pct"], r["cond"], r["rank"], r["creation"], r["qualifies"], r["formula"]) for r in rows])
+                  r["keepa_pct"], r["cond"], r["rank"], r["creation"], r["qualifies"], r["formula"], r.get("image"),
+                  _json(r.get("ref_parts")), _json(r.get("ref_flags"))) for r in rows])
+
+    def get_review(self, asin):
+        from psycopg.rows import dict_row
+        with self.conn.cursor(row_factory=dict_row) as cur:
+            return cur.execute("SELECT status FROM review WHERE asin = %s",
+                               (asin,)).fetchone()
+
+    def put_review(self, t, r):
+        self.conn.execute(
+            "INSERT INTO review (asin, status, layer, reasons, rules, title, image, cond, resale_cents, ref_cents, strict, "
+            "ref_flags, ref_parts, first_held_at, updated_at) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+            "ON CONFLICT (asin) DO UPDATE SET status=EXCLUDED.status, layer=EXCLUDED.layer, reasons=EXCLUDED.reasons, "
+            "rules=EXCLUDED.rules, title=EXCLUDED.title, image=COALESCE(EXCLUDED.image, review.image), cond=EXCLUDED.cond, "
+            "resale_cents=EXCLUDED.resale_cents, ref_cents=EXCLUDED.ref_cents, strict=EXCLUDED.strict, "
+            "ref_flags=EXCLUDED.ref_flags, ref_parts=EXCLUDED.ref_parts, updated_at=EXCLUDED.updated_at, "
+            "first_held_at=CASE WHEN review.status = 'cleared' AND EXCLUDED.status = 'pending' "
+            "THEN EXCLUDED.first_held_at ELSE review.first_held_at END",
+            (r["asin"], r["status"], r["layer"], json.dumps(r["reasons"]), r["rules"], r["title"], r.get("image"),
+             r.get("cond"), r["resale"], r["ref"], r["strict"], _json(r.get("ref_flags")), _json(r.get("ref_parts")),
+             _ts(t), _ts(t)))
 
     def add_check(self, t, check, offers):
         cid = self.conn.execute(
-            "INSERT INTO checks (checked_at, asin, offers_ok, ref_cents, ref_parts, best_strict, tokens, formula) "
-            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
+            "INSERT INTO checks (checked_at, asin, offers_ok, ref_cents, ref_parts, best_strict, tokens, formula, ref_flags) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
             (_ts(t), check["asin"], check["offers_ok"], check["ref"], json.dumps(check["ref_parts"]),
-             check["best"], check["tokens"], check["formula"])).fetchone()[0]
+             check["best"], check["tokens"], check["formula"], _json(check.get("ref_flags")))).fetchone()[0]
         if offers:
             with self.conn.cursor() as cur:
                 cur.executemany("INSERT INTO check_offers VALUES (%s,%s,%s,%s,%s,%s)",

@@ -5,6 +5,8 @@ import json
 
 import pytest
 
+from fiftyoff import analysis
+
 from fiftyoff.keepa import Keepa, Ledger, unix_to_keepa
 from fiftyoff.tracker import (GONE_AFTER, HOUR, MemoryStore, Tracker, TrackerConfig, lifespan, qualifies,
                               strict_ref_from_stats)
@@ -349,3 +351,70 @@ def test_census_pages_one_at_a_time_rotates_and_watches_nothing(rig):
     assert len({r["t"] for r in store.census}) == 1          # both pages stamped with the pass start
     clock.t += 120; tr.step()
     assert [b for e, _, b in script.calls if e == "deal"][-1]["includeCategories"] == [222]
+
+
+def test_checks_and_sweep_rows_record_ref_flags(rig):
+    clock, script, store, tr, _ = rig
+    script.pages = [[deal("A", 9000, 20000, unix_to_keepa(T0))]]   # New only: no Amazon price
+    tr.sweep()
+    assert store.sweep_rows[0]["ref_flags"]["flags"][0] == "third_party_only"
+    assert store.sweep_rows[0]["ref_parts"]["new_now"] == 20000
+    script.products["A"] = [product([(7, 9000)])]
+    tr.check("A")
+    check, _ = store.checks[-1]
+    assert check["ref_flags"]["v"] == analysis.REF_FLAGS_VERSION and "third_party_only" in check["ref_flags"]["flags"]
+
+
+def test_ref_flag_replay_sizes_both_policies(tmp_path):
+    import gzip, json as _json
+    from fiftyoff import refreplay
+    from tests.test_analysis import JABRA_CUR, TI84_CUR
+    raw = tmp_path / "raw" / "run1"
+    raw.mkdir(parents=True)
+    def put(name, resp):
+        with gzip.open(raw / f"{name}.json.gz", "wt") as f:
+            f.write(_json.dumps({"request": {"sentAt": "2026-10-04T10:00:00+00:00"}, "response": resp}))
+    ti = {**deal("TI", 5650, 31999, 1), "current": TI84_CUR + [-1] * 13, "avg": [TI84_CUR + [-1] * 13] * 4}
+    clean = {**deal("OK", 9000, 20000, 1), "current": arr(i0=20000, i1=21000, i3=900, i17=800, i9=9000)}
+    put("000001-census-1-p0", {"deals": {"dr": [ti, clean]}})
+    put("000002-check-J", {"products": [{**product([(1, 4790)], new=21499), "asin": "J", "title": "Jabra",
+                                         "stats": {"current": JABRA_CUR, "avg": JABRA_CUR}}]})
+    md, rows = refreplay.report(tmp_path / "raw", TrackerConfig(), 24, ("TI", "J"))
+    by = {r["asin"]: r for r in rows}
+    assert by["TI"]["f"]["suspect"] and by["J"]["f"]["suspect"] and not by["OK"]["f"]["flags"]
+    assert "**TI**" in md and "**J**" in md and "flag drops it: True" in md
+
+
+def test_review_status_transitions():
+    """The rules' state only (D36): pending or cleared. Human decisions live in curation."""
+    from fiftyoff.tracker import next_review_status as nx
+    assert nx(None, []) is None and nx(None, ["thin"]) == "pending"
+    assert nx({"status": "pending"}, []) == "cleared"
+    assert nx({"status": "cleared"}, ["too_good"]) == "pending"
+    assert nx({"status": "pending"}, ["thin"]) == "pending"
+
+
+def test_check_holds_a_suspect_deal_and_clears_it(rig):
+    from tests.test_analysis import JABRA_CUR
+    clock, script, store, tr, _ = rig
+    script.pages = [[deal("A", 4790, 21499, unix_to_keepa(T0))]]
+    tr.sweep()
+    held = {**product([(7, 4790)], new=21499), "stats": {"current": JABRA_CUR, "avg": JABRA_CUR}}
+    clean = product([(7, 4790)], new=21499)
+    clean["stats"]["current"][0] = 21499                       # Amazon now sells it: no longer third-party-only
+    script.products["A"] = [held, clean]
+    tr.check("A")
+    r = store.reviews["A"]
+    assert r["status"] == "pending" and r["reasons"] == ["thin", "too_good"] and r["layer"] == "check"
+    clock.t += 900; tr.check("A")
+    assert store.reviews["A"]["status"] == "cleared" and store.reviews["A"]["reasons"] == []
+
+
+def test_census_holds_only_qualifying_suspects(rig):
+    clock, script, store, tr, _ = rig
+    tr.cfg.census_enabled, tr.cfg.census_cats = True, [1]
+    tp = deal("TP", 5000, 20000, 1)                             # 75% off, New only -> too_good
+    ok = {**deal("OK", 5000, 20000, 1), "current": arr(i0=20000, i1=20000, i3=1000, i9=5000)}
+    script.pages = [[tp, ok]]
+    tr.census()
+    assert set(store.reviews) == {"TP"} and store.reviews["TP"]["reasons"] == ["too_good"]

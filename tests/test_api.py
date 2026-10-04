@@ -35,7 +35,7 @@ def gone_rows():
 
 
 PUBLIC_PRODUCT = {"asin", "title", "category", "image", "url", "score", "score_parts", "pct_off", "price", "near_miss",
-                  "unit_count", "minutes_since_confirmed", "minutes_since_priced", "is_new", "confidence", "units"}
+                  "unit_count", "minutes_since_confirmed", "minutes_since_priced", "is_new", "confidence", "verified", "units"}
 PUBLIC_UNIT = {"condition", "price", "pct_off", "score", "minutes_since_confirmed", "unconfirmed", "confidence"}
 
 
@@ -53,6 +53,7 @@ def status_stub():
 
 
 def app(**kw):
+    kw.setdefault("fetch_review", lambda: [])
     return TestClient(create_app(fetch=rows, fetch_gone=gone_rows, fetch_status=status_stub, password="", **kw))
 
 
@@ -130,7 +131,7 @@ def test_low_confidence_units_are_held_back_by_default():
     missed = {**_row("B0MISS0001", "Missed Vac", 0.55, "Used - Like New", 9000, 20000, minutes=30),
               "unconfirmed": True}
     c = TestClient(create_app(fetch=lambda: [fresh_drop, settled, missed], fetch_gone=gone_rows,
-                              fetch_status=status_stub, password=""))
+                              fetch_status=status_stub, fetch_review=lambda: [], password=""))
     r = c.get("/api/feed").json()
     assert [p["asin"] for p in r["products"]] == ["B0OLD00001"] and r["held_back"] == 2
     assert r["products"][0]["confidence"]["label"] == "HIGH"            # 2.5 h on a settled listing: still likely
@@ -142,7 +143,7 @@ def test_low_confidence_units_are_held_back_by_default():
 def test_new_deals_sort_first_and_fresh_filter():
     now = datetime.now(timezone.utc)
     fresh = {**_row("B0NEW00001", "New Lamp", 0.51, "Used - Like New", 4900, 10000), "priced_at": now - timedelta(hours=2)}
-    c = TestClient(create_app(fetch=lambda: rows() + [fresh], fetch_gone=gone_rows, fetch_status=status_stub, password=""))
+    c = TestClient(create_app(fetch=lambda: rows() + [fresh], fetch_gone=gone_rows, fetch_status=status_stub, fetch_review=lambda: [], password=""))
     ps = c.get("/api/feed?sort=newest").json()["products"]
     assert ps[0]["asin"] == "B0NEW00001" and ps[0]["is_new"] and ps[0]["minutes_since_priced"] in (119, 120)
     assert [p["asin"] for p in c.get("/api/feed?fresh=true").json()["products"]] == ["B0NEW00001"]
@@ -156,3 +157,117 @@ def test_status_reports_funnel_hourly_and_tracker():
     assert r["hourly"][0]["checks"] == 160 and r["tracker"]["fast_lane"] == 17
     assert r["census"][0]["category"] == "Toys & Games" and r["census"][0]["median_strict"] == 0.41
     assert 0.4 <= r["tracker"]["heartbeat_minutes_ago"] <= 0.6 and r["tracker"]["last_sweep_minutes_ago"] == 10.0
+
+
+def test_explore_adds_census_deals_labelled_unverified():
+    now = datetime.now(timezone.utc)
+    cen = {**_row("B0CENS0001", "Car Jump Starter", 0.58, "Used - Like New", 8400, 20000, minutes=90),
+           "category": "Automotive", "source": "census", "offer_id": None, "reviews": None, "drops30": None,
+           "monthly_sold": None, "amazon_sells": None, "rating": None}
+    c = TestClient(create_app(fetch=rows, fetch_gone=gone_rows, fetch_status=status_stub,
+                              fetch_census=lambda: [cen], password=""))
+    plain = c.get("/api/feed").json()
+    assert "B0CENS0001" not in [p["asin"] for p in plain["products"]]          # off unless asked for
+    r = c.get("/api/feed?explore=true").json()
+    p = next(p for p in r["products"] if p["asin"] == "B0CENS0001")
+    assert p["verified"] is False and all(q["verified"] for q in r["products"] if q["asin"] != "B0CENS0001")
+    cats = {x["name"]: x for x in r["categories"]}
+    assert cats["Automotive"]["verified"] is False and cats["Tools & Home Improvement"]["verified"] is True
+    assert [p["asin"] for p in c.get("/api/feed?explore=true&category=Automotive").json()["products"]] == ["B0CENS0001"]
+
+
+def _queue_row(asin, listed, **kw):
+    now = datetime.now(timezone.utc)
+    return {"asin": asin, "status": "pending", "layer": "check", "reasons": ["thin", "too_good"], "rules": "r0.1",
+            "title": "Jabra", "image": None, "cond": "Used - Like New", "resale_cents": 4790, "ref_cents": 21350,
+            "strict": 0.776, "ref_flags": {"flags": ["third_party_only", "thin"]}, "ref_parts": {"new_now": 21499},
+            "updated_at": now, "first_held_at": now, "visibility": "auto", "tags": [], "note": None,
+            "decided_ref_cents": None, "decided_at": None, "decided_by": None,
+            "unlisted_why": None if listed else "held", "listed": listed, **kw}
+
+
+def basic(user, pw):
+    import base64
+    return {"authorization": "Basic " + base64.b64encode(f"{user}:{pw}".encode()).decode()}
+
+
+ADMIN = basic("admin", "adm1n")
+
+
+def admin_app(**kw):
+    kw.setdefault("fetch_review", lambda: [])
+    kw.setdefault("fetch_curated", lambda: [])
+    return TestClient(create_app(fetch=rows, fetch_gone=gone_rows, fetch_status=status_stub, password="s3cret",
+                                 admin_password="adm1n", tags=("featured", "newsletter"), **kw))
+
+
+def test_admin_review_queue_lists_held_deals():
+    now = datetime.now(timezone.utc)
+    queue = [_queue_row("B0HELD0001", False, first_held_at=now - timedelta(hours=5)),
+             _queue_row("B000000OLD", True, status="cleared", reasons=[]),
+             _queue_row("B000000APR", True, visibility="approved", decided_ref_cents=22000, decided_at=now),
+             _queue_row("B000000LAP", False, visibility="approved", decided_ref_cents=10000, unlisted_why="approval_lapsed",
+                        reasons=["thin"])]
+    c = admin_app(fetch_review=lambda: queue)
+    body = c.get("/admin/api/review?sort=reasons", headers=ADMIN).json()
+    assert [i["asin"] for i in body["items"]] == ["B0HELD0001", "B000000LAP"]
+    newest = c.get("/admin/api/review", headers=ADMIN).json()["items"]           # default: newest hold on top
+    assert [i["asin"] for i in newest] == ["B000000LAP", "B0HELD0001"] and newest[1]["minutes_since_held"] == 300
+    assert body["counts"] == {"held": 2, "listed": 2, "approved": 2, "lapsed": 1}
+    assert body["items"][0]["ref"] == 213.50 and body["items"][0]["pct_off"] == 78 and body["tags"] == ["featured", "newsletter"]
+    assert body["items"][1]["why"] == "approval_lapsed" and body["items"][1]["decided_ref"] == 100.0
+    assert [i["asin"] for i in c.get("/admin/api/review?status=listed&sort=reasons", headers=ADMIN).json()["items"]] == \
+        ["B000000APR", "B000000OLD"]  # most reasons first
+    assert c.get("/admin/", headers=ADMIN).status_code == 200
+    # the status page counts what is out of the feed, not raw pending rows
+    assert c.get("/api/status", headers=ADMIN).json()["funnel"]["held_for_review"] == 2
+
+
+def test_admin_curate_validates_and_records_identity():
+    calls = []
+
+    def curate(asin, change, tags, by):
+        from fiftyoff import curation
+        new, log = curation.apply(None, change, tags, 21350)
+        calls.append((asin, by, log))
+        return {**new, "changed": [f for f, _, _ in log]}
+
+    c = admin_app(curate=curate)
+    r = c.post("/admin/api/curation/B0HELD0001", json={"visibility": "approved", "tags_add": ["featured"]}, headers=ADMIN)
+    assert r.status_code == 200 and r.json()["visibility"] == "approved" and r.json()["decided_ref_cents"] == 21350
+    assert calls[0][:2] == ("B0HELD0001", "admin")
+    assert c.post("/admin/api/curation/B0HELD0001", json={"tags_add": ["spam"]}, headers=ADMIN).status_code == 400
+    assert c.post("/admin/api/curation/B0HELD0001", json={"visibility": "delete"}, headers=ADMIN).status_code == 400
+    assert c.post("/admin/api/curation/not-an-asin", json={"visibility": "hidden"}, headers=ADMIN).status_code == 400
+
+
+def test_admin_routes_need_the_admin_password():
+    c = admin_app()
+    preview = basic("fiftyoff", "s3cret")
+    for path in ("/admin/", "/admin/api/review", "/admin/api/curation"):
+        assert c.get(path).status_code == 401
+        assert c.get(path, headers=preview).status_code == 401              # the preview login is not enough
+        assert c.get(path, headers=ADMIN).status_code == 200
+    assert c.post("/admin/api/curation/B0HELD0001", json={"visibility": "hidden"}, headers=preview).status_code == 401
+    assert 'realm="fiftyoff admin"' in c.get("/admin").headers["www-authenticate"]
+    assert c.get("/api/feed", headers=preview).status_code == 200            # preview login still opens the feed
+    assert c.get("/api/feed", headers=ADMIN).status_code == 200              # and so does the admin one
+    assert c.get("/api/health").status_code == 200
+    r = c.get("/closed-preview/review", headers=preview, follow_redirects=False)
+    assert r.status_code == 307 and r.headers["location"] == "/admin/"
+    assert c.get("/admin", headers=ADMIN, follow_redirects=False).headers["location"] == "/admin/"
+    assert c.get("/api/review", headers=ADMIN).status_code == 404            # the D35 routes are gone
+
+
+def test_admin_is_closed_without_an_admin_password():
+    c = TestClient(create_app(fetch=rows, fetch_gone=gone_rows, fetch_review=lambda: [], password="", admin_password=""))
+    assert c.get("/api/feed").status_code == 200
+    assert c.get("/admin/").status_code == 401
+    assert c.get("/admin/api/review", headers=basic("admin", "")).status_code == 401
+
+
+def test_admin_tags_fall_back_when_the_config_is_missing(tmp_path):
+    from fiftyoff.api import admin_tags
+    assert admin_tags(tmp_path / "nope.toml") == ("featured", "newsletter")
+    (tmp_path / "p.toml").write_text('[admin]\ntags = ["featured", "deals-of-the-week"]\n')
+    assert admin_tags(tmp_path / "p.toml") == ("featured", "deals-of-the-week")

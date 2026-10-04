@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<title>fiftyoff admin</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>½</text></svg>">
+<style>
+/* Admin (D36): the review queue (D35) and curation (approve, hide, tag any deal). Shows reference
+   prices and other signals beyond D19 and is behind the admin gate (ADMIN_PASSWORD; later Cloudflare Access). */
+:root {
+  --bg: #fafaf7; --surface: #ffffff; --fg: #16161a; --muted: #6b6b76; --line: #e7e6e0; --img: #ffffff;
+  --accent: #e4572e; --accent-soft: #fdebe5; --warn: #9a6a00; --warn-soft: #fbf1d9; --good: #1f7a4d; --good-soft: #e3f3ea;
+  --bad: #b3261e; --bad-soft: #fbe4e2;
+  --font: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #111114; --surface: #18181c; --fg: #f2f2ee; --muted: #9a9aa6; --line: #2a2a31; --img: #f4f4f1;
+  --accent: #f0714b; --accent-soft: #3a211a; --warn: #e3b450; --warn-soft: #33290f; --good: #5cc48f; --good-soft: #15291f;
+  --bad: #f28b82; --bad-soft: #3a1b19; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #111114; --surface: #18181c; --fg: #f2f2ee; --muted: #9a9aa6; --line: #2a2a31; --img: #f4f4f1;
+  --accent: #f0714b; --accent-soft: #3a211a; --warn: #e3b450; --warn-soft: #33290f; --good: #5cc48f; --good-soft: #15291f;
+  --bad: #f28b82; --bad-soft: #3a1b19; color-scheme: dark }
+* { box-sizing: border-box }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.45 var(--font); padding-inline: 16px; padding-block: 24px 40px }
+main { max-width: 960px; margin: 0 auto; display: grid; grid-template-columns: minmax(0, 1fr); gap: 18px }
+header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 16px }
+.mark { font-size: 24px; font-weight: 800; letter-spacing: -.03em; margin: 0; line-height: 1 }
+.mark a { color: inherit; text-decoration: none }
+.mark span { color: var(--accent) }
+h1 { font-size: 18px; margin: 0 }
+.back { margin-left: auto; color: var(--accent); text-decoration: none; font-weight: 600 }
+.lede { color: var(--muted); margin: 0; max-width: 75ch }
+.controls { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: center }
+.controls label { font-size: 12px; color: var(--muted); display: flex; gap: 6px; align-items: center }
+select, input[type=text] { font: inherit; color: var(--fg); background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 5px 8px }
+:is(select, input, a, button):focus-visible { outline: 2px solid var(--accent); outline-offset: 2px }
+.stats { display: flex; flex-wrap: wrap; gap: 8px 22px; font-size: 13px; color: var(--muted) }
+.stats b { color: var(--fg); font-variant-numeric: tabular-nums }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 14px; display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 12px 14px }
+.card.done { opacity: .55 }
+.thumb { width: 72px; height: 72px; background: var(--img); border-radius: 8px; display: grid; place-items: center; overflow: hidden }
+.thumb img { width: 100%; height: 100%; object-fit: contain; padding: 4px }
+.t { font-weight: 600; margin: 0 0 2px; overflow-wrap: anywhere }
+.t a { color: inherit; text-decoration: none }
+.t a:hover { text-decoration: underline }
+.sub { font-size: 12px; color: var(--muted) }
+.sub a { color: inherit }
+.off { color: var(--accent); font-weight: 800 }
+.tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px }
+.tag { font-size: 11px; font-weight: 600; border-radius: 4px; padding: 1px 6px; background: var(--line); color: var(--muted) }
+.tag.r { background: var(--bad-soft); color: var(--bad) }
+.ev { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 6px 14px; font-size: 13px }
+.ev div { display: flex; flex-direction: column }
+.ev span { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em }
+.ev b { font-variant-numeric: tabular-nums; font-weight: 600 }
+.ev b.hi { color: var(--bad) }
+.why { grid-column: 1 / -1; font-size: 13px; margin: 0; color: var(--fg) }
+.act { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 8px; align-items: center }
+.act input { flex: 1 1 200px; min-width: 0 }
+button { font: inherit; font-weight: 600; border-radius: 8px; padding: 6px 14px; cursor: pointer; border: 1px solid var(--line); background: var(--surface); color: var(--fg) }
+button.ok { background: var(--good-soft); color: var(--good); border-color: transparent }
+button.no { background: var(--bad-soft); color: var(--bad); border-color: transparent }
+button:disabled { opacity: .5; cursor: default }
+.state { font-size: 12px; font-weight: 700 }
+.empty { padding: 24px; text-align: center; color: var(--muted); background: var(--surface); border: 1px solid var(--line); border-radius: 12px }
+footer { font-size: 12px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 6px 16px; justify-content: space-between }
+footer a { color: inherit }
+@media (max-width: 520px) { .card { grid-template-columns: 56px minmax(0, 1fr) } .thumb { width: 56px; height: 56px } }
+.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line) }
+.tabs button { border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: none; color: var(--muted); padding: 8px 12px }
+.tabs button[aria-selected=true] { color: var(--fg); border-bottom-color: var(--accent) }
+.hidebox { display: flex; flex-wrap: wrap; gap: 8px; align-items: center }
+[hidden] { display: none !important }
+#hide-asin { width: 13ch; text-transform: uppercase }
+button.tg { font-size: 12px; padding: 4px 10px; font-weight: 600 }
+button.tg[aria-pressed=true] { background: var(--accent-soft); color: var(--accent); border-color: transparent }
+button.cur { outline: 2px solid currentColor; outline-offset: -2px }
+.tag.ok { background: var(--good-soft); color: var(--good) }
+.act .state { flex-basis: 100% }  /* own row: a save message must not shift the buttons */
+.tag.v { background: var(--warn-soft); color: var(--warn) }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <p class="mark"><a href="/closed-preview">fifty<span>off</span></a></p>
+    <h1>Admin</h1>
+    <a class="back" href="/closed-preview">← Live deals</a><a class="back" style="margin-left:14px" href="/closed-preview/status">Status</a>
+  </header>
+
+  <div class="tabs" role="tablist">
+    <button type="button" role="tab" id="tab-queue" aria-selected="true">Queue</button>
+    <button type="button" role="tab" id="tab-curated" aria-selected="false">Curated</button>
+  </div>
+
+  <p class="lede" id="lede-queue">Deals the rules hold out of the feed because the reference price behind their % off looks wrong. <b>Approve</b> lists the deal while its reference stays within 20% of today's; if it moves further, the deal comes back here. <b>Hide</b> keeps it out for good. <b>Auto</b> hands it back to the rules.</p>
+  <p class="lede" id="lede-curated" hidden>Every deal with a human decision: approved, hidden, tagged or noted. Every change is logged.</p>
+
+  <div class="controls" id="queue-controls">
+    <label for="status">Show
+      <select id="status"><option value="held" selected>Held (out of the feed)</option><option value="listed">Listed</option><option value="all">All</option></select>
+    </label>
+    <label for="sort">Sort
+      <select id="sort"><option value="newest" selected>Newest held first</option><option value="reasons">Most reasons first</option></select>
+    </label>
+    <label for="days">Seen within
+      <select id="days"><option value="1">1 day</option><option value="3" selected>3 days</option><option value="14">14 days</option><option value="60">60 days</option></select>
+    </label>
+  </div>
+  <form class="hidebox" id="hidebox" hidden>
+    <label for="hide-asin" class="sub">Hide any deal by ASIN</label>
+    <input id="hide-asin" type="text" placeholder="B0XXXXXXXX" maxlength="10" pattern="[A-Za-z0-9]{10}" required>
+    <input id="hide-note" type="text" placeholder="Why (optional)" maxlength="500" style="flex:1 1 200px;min-width:0">
+    <button class="no" type="submit">Hide</button>
+    <span class="state" id="hide-state" aria-live="polite"></span>
+  </form>
+
+  <div class="stats" id="stats" aria-live="polite">Loading…</div>
+  <div id="list" style="display:grid;gap:12px"></div>
+
+  <footer>
+    <span>Admin view. Rules <span id="rules">r0.1</span> (D35), curation (D36).</span>
+    <a href="https://keepa.com" rel="noopener" target="_blank">Data by Keepa</a>
+  </footer>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const usd = (n) => n == null ? "—" : n.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: n >= 100 ? 0 : 2 });
+const cents = (c) => c == null ? null : c / 100;
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const ago = (m) => m < 60 ? `${m} min ago` : m < 1440 ? `${Math.floor(m / 60)} h ago` : `${Math.floor(m / 1440)} d ago`;
+const sized = (u) => u ? u.replace(/\.(jpg|png|gif)$/, "._SL160_.$1") : "";
+const WHY = {
+  above_list: "Reference is above the list price.",
+  vs_refurb: "Reference is more than 2.5× the refurbished price.",
+  thin: "Only third-party sellers set the price, with few reviews and no sales rank.",
+  too_good: "70%+ off, and no Amazon price backs the reference (a year of history on live checks, 90 days on explore).",
+};
+const UNLISTED = { held: "held by the rules", approval_lapsed: "approval lapsed: the reference moved over 20% (or was unknown when approved)", hidden: "hidden" };
+const PART = { amazon_now: "Amazon now", new_now: "New now", amazon_avg1d: "Amazon 1d", new_avg1d: "New 1d",
+  new_avg48h: "New 48h", amazon_avg30: "Amazon 30d", new_avg30: "New 30d", amazon_avg90: "Amazon 90d", new_avg90: "New 90d" };
+let tab = "queue", TAGS = [];
+
+function state(i) {
+  const v = i.visibility !== "auto" ? `<span class="tag ${i.visibility === "approved" ? "ok" : "r"}">${esc(i.visibility)}</span>` : "";
+  const l = i.listed ? `<span class="tag ok">listed</span>` : `<span class="tag v">out: ${esc(UNLISTED[i.why] || i.why)}</span>`;
+  return v + l + (i.tags || []).map((t) => `<span class="tag">#${esc(t)}</span>`).join("");
+}
+
+function actions(i) {
+  const vis = (v, cls, label) => `<button class="${cls}${i.visibility === v ? " cur" : ""}" type="button" data-v="${v}">${label}</button>`;
+  return `<div class="act">
+      <input type="text" placeholder="Note (optional)" maxlength="500" value="${esc(i.note || "")}" aria-label="Note for ${esc(i.asin)}">
+      ${vis("approved", "ok", "Approve")}${vis("hidden", "no", "Hide")}${vis("auto", "", "Auto")}
+      ${TAGS.map((t) => `<button class="tg" type="button" data-t="${esc(t)}" aria-pressed="${(i.tags || []).includes(t)}">#${esc(t)}</button>`).join("")}
+      <span class="state"></span>
+    </div>`;
+}
+
+function head(i, sub) {
+  return `<div class="thumb">${i.image ? `<img src="${esc(sized(i.image))}" alt="" loading="lazy" referrerpolicy="no-referrer">` : ""}</div>
+    <div>
+      <p class="t"><a href="${esc(i.url)}" rel="noopener" target="_blank">${esc(i.title || i.asin)}</a></p>
+      <div class="sub">${sub}</div>
+      <div class="tags">${state(i)}</div>
+    </div>`;
+}
+
+function queueCard(i) {
+  const f = i.flags || {};
+  const ratio = (x) => x ? (i.ref / x).toFixed(1) + "×" : "";
+  const ev = [
+    ["Resale", usd(i.price)], ["Reference", usd(i.ref)],
+    ["List price", usd(cents(f.list)) + (f.list ? ` · ${ratio(cents(f.list))}` : ""), i.reasons.includes("above_list")],
+    ["Refurbished", usd(cents(f.refurb)) + (f.refurb ? ` · ${ratio(cents(f.refurb))}` : ""), i.reasons.includes("vs_refurb")],
+    ["Amazon price", usd(cents(f.amazon)), i.reasons.includes("too_good")],
+    ["Cheapest used", usd(cents(f.used))],
+    ["Reviews", f.reviews ?? "—", i.reasons.includes("thin")],
+    ["New offers", f.new_offers ?? "—"],
+    ...(i.decided_ref ? [["Approved at ref", usd(i.decided_ref)]] : []),
+  ];
+  const parts = Object.entries(i.ref_parts || {}).map(([k, v]) => `${PART[k] || k} ${usd(v / 100)}`).join(" · ");
+  const sub = `<span class="off">${i.pct_off}% off</span> · ${esc(String(i.condition || "").replace(/^Used - /, ""))} ·
+        ${i.layer === "census" ? "explore (not live-checked)" : "live-checked"} · held ${ago(i.minutes_since_held)} · seen ${ago(i.minutes_since_seen)} ·
+        <a href="${esc(i.keepa)}" rel="noopener" target="_blank">Keepa chart</a>`;
+  const flags = (f.flags || []).filter((x) => !i.reasons.includes(x));
+  return `<article class="card" id="c-${i.asin}">${head(i, sub)}
+    <p class="why">${i.reasons.map((r) => `<span class="tag r">${esc(r)}</span> ${esc(WHY[r] || r)}`).join(" ") || "The rules no longer hold this deal."}
+      ${flags.length ? `<br><span class="sub">Other flags: ${flags.map(esc).join(", ")}</span>` : ""}
+      ${parts ? `<br><span class="sub">Reference candidates: ${esc(parts)}</span>` : ""}</p>
+    <div class="ev">${ev.map(([k, v, hi]) => `<div><span>${k}</span><b class="${hi ? "hi" : ""}">${v}</b></div>`).join("")}</div>
+    ${actions(i)}
+  </article>`;
+}
+
+function curatedCard(i) {
+  const sub = [i.pct_off != null ? `<span class="off">${i.pct_off}% off</span>` : "not a current deal",
+    i.ref != null ? `reference ${usd(i.ref)}` : "", i.decided_ref ? `approved at ${usd(i.decided_ref)}` : "",
+    i.reasons.length ? `rules: ${i.reasons.map(esc).join(", ")}` : "",
+    `changed ${ago(i.minutes_since_update)} by ${esc(i.updated_by)}`].filter(Boolean).join(" · ");
+  return `<article class="card" id="c-${i.asin}">${head(i, sub)}${actions(i)}</article>`;
+}
+
+async function curate(asin, change, el) {
+  const btns = el ? el.querySelectorAll("button") : [];
+  btns.forEach((b) => b.disabled = true);
+  const out = el ? el.querySelector(".act .state") : $("hide-state");
+  try {
+    const r = await fetch(`/admin/api/curation/${asin}`, { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify(change) });
+    if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
+    const d = await r.json();
+    out.textContent = d.changed.length ? `Saved: ${d.changed.join(", ")}` : "No change";
+    out.style.color = "";
+    setTimeout(load, 600);
+  } catch (e) {
+    out.textContent = `Couldn't save (${e.message})`;
+    out.style.color = "var(--bad)";
+  } finally {
+    btns.forEach((b) => b.disabled = false);
+  }
+}
+
+async function load() {
+  const url = tab === "queue" ? `/admin/api/review?${new URLSearchParams({ status: $("status").value, days: $("days").value, sort: $("sort").value })}`
+                              : "/admin/api/curation";
+  try {
+    const r = await fetch(url);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const d = await r.json();
+    TAGS = d.tags || [];
+    if (tab === "queue") {
+      const c = d.counts;
+      $("stats").innerHTML = `<span><b>${d.count}</b> shown</span><span>held <b>${c.held}</b></span><span>listed <b>${c.listed}</b></span>` +
+        `<span>approved <b>${c.approved}</b></span><span>approval lapsed <b>${c.lapsed}</b></span>`;
+      if (d.items[0]) $("rules").textContent = d.items[0].rules;
+    } else {
+      const n = (v) => d.items.filter((i) => i.visibility === v).length;
+      $("stats").innerHTML = `<span><b>${d.count}</b> curated</span><span>approved <b>${n("approved")}</b></span><span>hidden <b>${n("hidden")}</b></span>`;
+    }
+    $("list").innerHTML = d.items.length ? d.items.map(tab === "queue" ? queueCard : curatedCard).join("") : `<div class="empty">Nothing here.</div>`;
+  } catch (e) {
+    $("stats").textContent = `Couldn't load (${e.message}).`;
+  }
+}
+
+function show(t) {
+  tab = t;
+  $("tab-queue").setAttribute("aria-selected", t === "queue");
+  $("tab-curated").setAttribute("aria-selected", t === "curated");
+  $("lede-queue").hidden = $("queue-controls").hidden = t !== "queue";
+  $("lede-curated").hidden = $("hidebox").hidden = t !== "curated";
+  $("list").innerHTML = "";
+  load();
+}
+
+$("list").addEventListener("click", (e) => {
+  const b = e.target.closest("button[data-v], button[data-t]");
+  if (!b) return;
+  const el = b.closest(".card"), note = el.querySelector(".act input").value;
+  if (b.dataset.v) curate(el.id.slice(2), { visibility: b.dataset.v, note }, el);
+  else curate(el.id.slice(2), { [b.getAttribute("aria-pressed") === "true" ? "tags_remove" : "tags_add"]: [b.dataset.t] }, el);
+});
+$("hidebox").addEventListener("submit", (e) => {
+  e.preventDefault();
+  curate($("hide-asin").value.trim().toUpperCase(), { visibility: "hidden", note: $("hide-note").value });
+});
+$("tab-queue").addEventListener("click", () => show("queue"));
+$("tab-curated").addEventListener("click", () => show("curated"));
+["status", "days", "sort"].forEach((id) => $(id).addEventListener("change", load));
+load();
+</script>
+</body>
+</html>

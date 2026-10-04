@@ -133,3 +133,7 @@ unconfirmed_minutes = 30        # a unit missing from the last check
 slow_minutes = 720             # D32: settled listings every ~12 h (they were ~10 h in practice; the census takes the rest)
 census_enabled = true          # D32: sweep-only census of other root categories (fiftyoff/tracker.py CENSUS_CATS)
 census_minutes = 2             # D32: one census page (5 tokens) every 2 min, <= 2.5 tokens/min
+
+[admin]
+# D36: tags an admin can put on a deal (featured strip, newsletter set...). /admin/.
+tags = ["featured", "newsletter"]
