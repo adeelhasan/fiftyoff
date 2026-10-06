@@ -14,8 +14,9 @@ Resale offer against a **strict reference**: the lowest of Amazon's price, the N
 | `preflight.py` | Budget-capped feasibility probe: deal-feed census, history samples, offline report |
 | `track1.py` | How often popular $100+ products have a Resale offer, and how deep the discount goes |
 | `collector.py` | Forward collector: sweeps the deal feed every 30 min and re-checks a watchlist to time how long each Resale unit lasts |
-| `tracker.py` | New-deal tracker: incremental deal-feed sweeps, priority live checks, unit lifespans with lower/upper bounds and HIGH/MEDIUM/LOW confidence, state in Postgres |
-| `fiftyoff/api.py` | Read-only deal feed API and preview page (FastAPI), served through a database role that can only read the feed |
+| `tracker.py` | New-deal tracker: incremental deal-feed sweeps plus a paced deep sweep split by category (each query under the API's 10k-result cap), priority live checks for 50%+ deals only, unit lifespans with lower/upper bounds and HIGH/MEDIUM/LOW confidence, state in Postgres |
+| `scripts/subcat_map.py` | Subcategory map from stored sweep rows: where deals flow below the root categories, and which products come up again and again |
+| `fiftyoff/api.py` | Read-only deal feed API and preview page (FastAPI): live-checked deals plus a "seen in the feed" layer, subcategory filter, variants grouped by parent, served through a database role that can only read the feed |
 | `fiftyoff/` | Keepa client (raw response saved before parsing, token ledger, hard token caps), strict-discount and episode analysis |
 
 How the tracker decides a unit is gone: Amazon often hides a Resale unit for a while and then shows

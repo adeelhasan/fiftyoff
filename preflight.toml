@@ -122,13 +122,16 @@ run_token_cap = 60000       # hard stop for this collector run (~2 days)
 sweep_minutes = 30
 full_sweep_hours = 12
 max_pages = 20                  # incremental sweeps (usually stop after 1-2 pages)
-full_sweep_max_pages = 100      # full sweeps reach old listings whose reference rose (~0.7 tokens/min)
+deep_minutes = 1                # D39: the 12 h deep sweep goes one page per minute, slice by slice (DEEP_SLICES)
 sweep_min_delta = 30            # Keepa nominal floor for the feed query; strict tiers below decide
 sweep_min_resale_cents = 2000
 tiers = [[0.40, 10000], [0.30, 20000]]   # strict >= 40% with $100+ reference, or >= 30% with $200+
 max_rank = 50000
 check_estimate = 7              # observed per check in D17 (13 = two offer pages, worst case)
 fast_minutes = 15               # new watch or unit (<6 h)
+fast_window_minutes = 120       # D40: 15-min checks for a new 50%+ deal's first 2 h only, then hourly to 6 h
+watch_min_strict = 0.47         # D40: live-check from ~47% sweep-strict; near misses are seen from the sweep only (on 2026-10-06, user)
+deep_watch_min_drops30 = 0      # D40 step 5: live-check 50%+ deals beyond the rank limit with this many 30-day rank drops (12 = top quarter; staged)
 unconfirmed_minutes = 30        # a unit missing from the last check
 slow_minutes = 720             # D32: settled listings every ~12 h (they were ~10 h in practice; the census takes the rest)
 census_enabled = true          # D32: sweep-only census of other root categories (fiftyoff/tracker.py CENSUS_CATS)

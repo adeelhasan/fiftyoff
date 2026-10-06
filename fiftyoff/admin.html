@@ -35,7 +35,7 @@ h1 { font-size: 18px; margin: 0 }
 .lede { color: var(--muted); margin: 0; max-width: 75ch }
 .controls { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: center }
 .controls label { font-size: 12px; color: var(--muted); display: flex; gap: 6px; align-items: center }
-select, input[type=text] { font: inherit; color: var(--fg); background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 5px 8px }
+select, input[type=text], input[type=email] { font: inherit; color: var(--fg); background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 5px 8px }
 :is(select, input, a, button):focus-visible { outline: 2px solid var(--accent); outline-offset: 2px }
 .stats { display: flex; flex-wrap: wrap; gap: 8px 22px; font-size: 13px; color: var(--muted) }
 .stats b { color: var(--fg); font-variant-numeric: tabular-nums }
@@ -94,9 +94,19 @@ button.cur { outline: 2px solid currentColor; outline-offset: -2px }
   <div class="tabs" role="tablist">
     <button type="button" role="tab" id="tab-queue" aria-selected="true">Queue</button>
     <button type="button" role="tab" id="tab-curated" aria-selected="false">Curated</button>
+    <button type="button" role="tab" id="tab-people" aria-selected="false">People</button>
+    <span class="sub" id="me" style="margin-left:auto;align-self:center"></span>
   </div>
 
   <p class="lede" id="lede-queue">Deals the rules hold out of the feed because the reference price behind their % off looks wrong. <b>Approve</b> lists the deal while its reference stays within 20% of today's; if it moves further, the deal comes back here. <b>Hide</b> keeps it out for good. <b>Auto</b> hands it back to the rules.</p>
+  <p class="lede" id="lede-people" hidden>Everyone who has signed in through Cloudflare Access. Invite or remove people in the Access allow-list (Cloudflare dashboard); here you set who is an admin, or turn someone's access off without touching the allow-list. Owners (ADMIN_EMAILS) are always admins.</p>
+  <form class="hidebox" id="addbox" hidden>
+    <label for="add-email" class="sub">Set up someone before they sign in</label>
+    <input id="add-email" type="email" placeholder="name@example.com" maxlength="254" required style="flex:1 1 220px;min-width:0">
+    <select id="add-role" aria-label="Role"><option value="viewer">Viewer</option><option value="admin">Admin</option></select>
+    <button type="submit">Save</button>
+    <span class="state" id="add-state" aria-live="polite"></span>
+  </form>
   <p class="lede" id="lede-curated" hidden>Every deal with a human decision: approved, hidden, tagged or noted. Every change is logged.</p>
 
   <div class="controls" id="queue-controls">
@@ -196,6 +206,39 @@ function queueCard(i) {
   </article>`;
 }
 
+function personCard(p) {
+  const seen = p.minutes_since_seen == null ? "hasn't signed in yet" : `last seen ${ago(p.minutes_since_seen)}`;
+  const tags = `${p.owner ? `<span class="tag ok">owner</span>` : ""}<span class="tag ${p.role === "admin" ? "ok" : ""}">${esc(p.role)}</span>` +
+    (p.active ? "" : `<span class="tag r">access off</span>`);
+  const btn = (attr, val, cls, label, on) => `<button class="${cls}${on ? " cur" : ""}" type="button" ${attr}="${val}"${p.owner ? " disabled" : ""}>${label}</button>`;
+  return `<article class="card person" data-email="${esc(p.email)}" style="grid-template-columns:minmax(0,1fr)">
+    <div><p class="t">${esc(p.email)}</p><div class="sub">${seen}${p.first_seen ? ` · first ${esc(p.first_seen.slice(0, 10))}` : ""}${p.updated_by ? ` · changed by ${esc(p.updated_by)}` : ""}</div>
+      <div class="tags">${tags}</div></div>
+    <div class="act">
+      <input type="text" placeholder="Note (optional)" maxlength="500" value="${esc(p.note || "")}" aria-label="Note for ${esc(p.email)}">
+      ${btn("data-role", "viewer", "", "Viewer", p.role === "viewer")}${btn("data-role", "admin", "ok", "Admin", p.role === "admin")}
+      ${btn("data-active", p.active ? "false" : "true", p.active ? "no" : "ok", p.active ? "Turn access off" : "Turn access on", false)}
+      <button type="button" data-save="1">Save note</button>
+      <span class="state"></span>
+    </div>
+  </article>`;
+}
+
+async function setPerson(email, change, out) {
+  try {
+    const r = await fetch(`/admin/api/people/${encodeURIComponent(email)}`, { method: "POST",
+      headers: { "content-type": "application/json" }, body: JSON.stringify(change) });
+    if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
+    const d = await r.json();
+    out.textContent = d.changed.length ? `Saved: ${d.changed.join(", ")}` : "No change";
+    out.style.color = "";
+    setTimeout(load, 600);
+  } catch (e) {
+    out.textContent = `Couldn't save (${e.message})`;
+    out.style.color = "var(--bad)";
+  }
+}
+
 function curatedCard(i) {
   const sub = [i.pct_off != null ? `<span class="off">${i.pct_off}% off</span>` : "not a current deal",
     i.ref != null ? `reference ${usd(i.ref)}` : "", i.decided_ref ? `approved at ${usd(i.decided_ref)}` : "",
@@ -226,12 +269,19 @@ async function curate(asin, change, el) {
 
 async function load() {
   const url = tab === "queue" ? `/admin/api/review?${new URLSearchParams({ status: $("status").value, days: $("days").value, sort: $("sort").value })}`
-                              : "/admin/api/curation";
+            : tab === "people" ? "/admin/api/people" : "/admin/api/curation";
   try {
     const r = await fetch(url);
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const d = await r.json();
     TAGS = d.tags || [];
+    if (tab === "people") {
+      const n = (f) => d.items.filter(f).length;
+      $("stats").innerHTML = d.access ? `<span><b>${d.count}</b> people</span><span>admins <b>${n((p) => p.role === "admin")}</b></span>` +
+        `<span>access off <b>${n((p) => !p.active)}</b></span>` : "Cloudflare Access isn't configured on this server yet (CF_ACCESS_TEAM, CF_ACCESS_AUD).";
+      $("list").innerHTML = d.items.length ? d.items.map(personCard).join("") : `<div class="empty">Nobody has signed in through Access yet.</div>`;
+      return;
+    }
     if (tab === "queue") {
       const c = d.counts;
       $("stats").innerHTML = `<span><b>${d.count}</b> shown</span><span>held <b>${c.held}</b></span><span>listed <b>${c.listed}</b></span>` +
@@ -249,15 +299,22 @@ async function load() {
 
 function show(t) {
   tab = t;
-  $("tab-queue").setAttribute("aria-selected", t === "queue");
-  $("tab-curated").setAttribute("aria-selected", t === "curated");
+  ["queue", "curated", "people"].forEach((x) => $(`tab-${x}`).setAttribute("aria-selected", t === x));
   $("lede-queue").hidden = $("queue-controls").hidden = t !== "queue";
   $("lede-curated").hidden = $("hidebox").hidden = t !== "curated";
+  $("lede-people").hidden = $("addbox").hidden = t !== "people";
   $("list").innerHTML = "";
   load();
 }
 
 $("list").addEventListener("click", (e) => {
+  const pb = e.target.closest(".person button");
+  if (pb) {
+    const el = pb.closest(".person"), out = el.querySelector(".state");
+    const change = pb.dataset.role ? { role: pb.dataset.role } : pb.dataset.active ? { active: pb.dataset.active === "true" }
+                 : { note: el.querySelector("input").value };
+    return setPerson(el.dataset.email, change, out);
+  }
   const b = e.target.closest("button[data-v], button[data-t]");
   if (!b) return;
   const el = b.closest(".card"), note = el.querySelector(".act input").value;
@@ -270,6 +327,14 @@ $("hidebox").addEventListener("submit", (e) => {
 });
 $("tab-queue").addEventListener("click", () => show("queue"));
 $("tab-curated").addEventListener("click", () => show("curated"));
+$("tab-people").addEventListener("click", () => show("people"));
+$("addbox").addEventListener("submit", (e) => {
+  e.preventDefault();
+  setPerson($("add-email").value.trim().toLowerCase(), { role: $("add-role").value }, $("add-state"));
+});
+fetch("/admin/api/me").then((r) => r.ok ? r.json() : null).then((m) => {
+  if (m && m.email) $("me").innerHTML = `${esc(m.email)}${m.owner ? " (owner)" : ""} · <a href="${esc(m.logout)}">Sign out</a>`;
+}).catch(() => {});
 ["status", "days", "sort"].forEach((id) => $(id).addEventListener("change", load));
 load();
 </script>

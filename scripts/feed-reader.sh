@@ -13,10 +13,16 @@ ALTER ROLE feed_reader PASSWORD '$PW';
 REVOKE ALL ON ALL TABLES IN SCHEMA public FROM feed_reader;
 GRANT USAGE ON SCHEMA public TO feed_reader;
 GRANT SELECT ON feed, deal_internal, gone_internal, status_state, status_funnel, status_hourly, census_summary, census_deal TO feed_reader;
+-- D39: the seen-in-feed layer and subcategory names
+GRANT SELECT ON sweep_deal, cat_node TO feed_reader;
 -- D35/D36: the review queue (read only; decisions moved to curation), and curation decisions + their log
 GRANT SELECT ON review, review_queue, curation_admin, curation TO feed_reader;
 GRANT INSERT, UPDATE ON curation TO feed_reader;
 GRANT INSERT ON curation_log TO feed_reader;
 GRANT USAGE ON SEQUENCE curation_log_id_seq TO feed_reader;
+-- D37: Cloudflare Access users (sign-in upserts, People tab) and their change log
+GRANT SELECT, INSERT, UPDATE ON app_user TO feed_reader;
+GRANT INSERT ON app_user_log TO feed_reader;
+GRANT USAGE ON SEQUENCE app_user_log_id_seq TO feed_reader;
 SQL
-echo "feed_reader: SELECT on the feed, gone, status and admin views; INSERT/UPDATE on curation, INSERT on curation_log"
+echo "feed_reader: SELECT on the feed, gone, status and admin views; INSERT/UPDATE on curation and app_user, INSERT on their logs"

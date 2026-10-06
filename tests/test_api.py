@@ -35,7 +35,8 @@ def gone_rows():
 
 
 PUBLIC_PRODUCT = {"asin", "title", "category", "image", "url", "score", "score_parts", "pct_off", "price", "near_miss",
-                  "unit_count", "minutes_since_confirmed", "minutes_since_priced", "is_new", "confidence", "verified", "units"}
+                  "unit_count", "minutes_since_confirmed", "minutes_since_priced", "is_new", "confidence", "verified", "units",
+                  "subcategory", "variants", "check_reference", "source", "inverted"}
 PUBLIC_UNIT = {"condition", "price", "pct_off", "score", "minutes_since_confirmed", "unconfirmed", "confidence"}
 
 
@@ -54,7 +55,9 @@ def status_stub():
 
 def app(**kw):
     kw.setdefault("fetch_review", lambda: [])
-    return TestClient(create_app(fetch=rows, fetch_gone=gone_rows, fetch_status=status_stub, password="", **kw))
+    kw.setdefault("fetch_seen", lambda: [])
+    kw.setdefault("fetch", rows)
+    return TestClient(create_app(fetch_gone=gone_rows, fetch_status=status_stub, password="", **kw))
 
 
 def test_feed_emits_public_fields_only_and_attribution():
@@ -86,6 +89,7 @@ def test_feed_groups_by_asin_and_defaults_to_headline_deals():
     assert near == {"B0TEST0001": False, "B0TEST0002": True, "B0TEST0003": False}
     assert [p["asin"] for p in c.get("/api/feed?q=drill").json()["products"]] == ["B0TEST0001"]
     assert c.get("/api/feed?q=rill").json()["products"] == []          # word starts only
+    assert [p["asin"] for p in c.get("/api/feed?q=drills").json()["products"]] == ["B0TEST0001"]   # plural finds singular
     assert [g["asin"] for g in c.get("/api/gone?q=espresso").json()["gone"]] == ["B0GONE0001"]
     assert c.get("/api/gone?q=drill").json()["gone"] == []
 
@@ -101,7 +105,7 @@ def test_bad_sort_is_rejected_and_preview_serves():
 
 def test_login_popup_guards_everything_but_health():
     import base64
-    c = TestClient(create_app(fetch=rows, fetch_gone=gone_rows, password="s3cret"))
+    c = TestClient(create_app(fetch_seen=lambda: [], fetch=rows, fetch_gone=gone_rows, password="s3cret"))
     r = c.get("/closed-preview")
     assert r.status_code == 401 and r.headers["www-authenticate"].startswith("Basic")
     assert c.get("/api/health").status_code == 200
@@ -117,7 +121,7 @@ def test_feed_query_is_cached():
     def counting(*a):
         calls.append(a)
         return rows(*a)
-    c = TestClient(create_app(fetch=counting, fetch_gone=gone_rows, password=""))
+    c = TestClient(create_app(fetch_seen=lambda: [], fetch=counting, fetch_gone=gone_rows, password=""))
     for _ in range(5):
         c.get("/api/feed")
     assert len(calls) == 1
@@ -130,7 +134,7 @@ def test_low_confidence_units_are_held_back_by_default():
     settled = _row("B0OLD00001", "Old Drill", 0.55, "Used - Like New", 9000, 20000, minutes=150)
     missed = {**_row("B0MISS0001", "Missed Vac", 0.55, "Used - Like New", 9000, 20000, minutes=30),
               "unconfirmed": True}
-    c = TestClient(create_app(fetch=lambda: [fresh_drop, settled, missed], fetch_gone=gone_rows,
+    c = TestClient(create_app(fetch_seen=lambda: [], fetch=lambda: [fresh_drop, settled, missed], fetch_gone=gone_rows,
                               fetch_status=status_stub, fetch_review=lambda: [], password=""))
     r = c.get("/api/feed").json()
     assert [p["asin"] for p in r["products"]] == ["B0OLD00001"] and r["held_back"] == 2
@@ -143,7 +147,7 @@ def test_low_confidence_units_are_held_back_by_default():
 def test_new_deals_sort_first_and_fresh_filter():
     now = datetime.now(timezone.utc)
     fresh = {**_row("B0NEW00001", "New Lamp", 0.51, "Used - Like New", 4900, 10000), "priced_at": now - timedelta(hours=2)}
-    c = TestClient(create_app(fetch=lambda: rows() + [fresh], fetch_gone=gone_rows, fetch_status=status_stub, fetch_review=lambda: [], password=""))
+    c = TestClient(create_app(fetch_seen=lambda: [], fetch=lambda: rows() + [fresh], fetch_gone=gone_rows, fetch_status=status_stub, fetch_review=lambda: [], password=""))
     ps = c.get("/api/feed?sort=newest").json()["products"]
     assert ps[0]["asin"] == "B0NEW00001" and ps[0]["is_new"] and ps[0]["minutes_since_priced"] in (119, 120)
     assert [p["asin"] for p in c.get("/api/feed?fresh=true").json()["products"]] == ["B0NEW00001"]
@@ -159,21 +163,61 @@ def test_status_reports_funnel_hourly_and_tracker():
     assert 0.4 <= r["tracker"]["heartbeat_minutes_ago"] <= 0.6 and r["tracker"]["last_sweep_minutes_ago"] == 10.0
 
 
-def test_explore_adds_census_deals_labelled_unverified():
-    now = datetime.now(timezone.utc)
-    cen = {**_row("B0CENS0001", "Car Jump Starter", 0.58, "Used - Like New", 8400, 20000, minutes=90),
-           "category": "Automotive", "source": "census", "offer_id": None, "reviews": None, "drops30": None,
-           "monthly_sold": None, "amazon_sells": None, "rating": None}
-    c = TestClient(create_app(fetch=rows, fetch_gone=gone_rows, fetch_status=status_stub,
-                              fetch_census=lambda: [cen], password=""))
-    plain = c.get("/api/feed").json()
-    assert "B0CENS0001" not in [p["asin"] for p in plain["products"]]          # off unless asked for
-    r = c.get("/api/feed?explore=true").json()
-    p = next(p for p in r["products"] if p["asin"] == "B0CENS0001")
-    assert p["verified"] is False and all(q["verified"] for q in r["products"] if q["asin"] != "B0CENS0001")
-    cats = {x["name"]: x for x in r["categories"]}
-    assert cats["Automotive"]["verified"] is False and cats["Tools & Home Improvement"]["verified"] is True
-    assert [p["asin"] for p in c.get("/api/feed?explore=true&category=Automotive").json()["products"]] == ["B0CENS0001"]
+def _seen(asin, title, strict, price, ref, minutes, source="feed", **kw):
+    r = {**_row(asin, title, strict, "Used - Like New", price, ref, minutes=minutes),
+         "source": source, "offer_id": None, "reviews": None, "monthly_sold": None, "amazon_sells": None,
+         "rating": None, "cat_path": None, "parent_asin": None, "cats": [11], "ref_flags": None, "drops30": 8}
+    return {**r, **kw}
+
+
+NODES = [{"id": 1, "name": "Tools & Home Improvement", "parent_id": None}, {"id": 5, "name": "Categories", "parent_id": 1},
+         {"id": 9, "name": "Kitchen & Bath Fixtures", "parent_id": 5}, {"id": 11, "name": "Kitchen Faucets", "parent_id": 9},
+         {"id": 12, "name": "Ice Makers", "parent_id": 9}]
+
+
+def test_seen_only_layer_windows_labels_and_filters():
+    """D39: seen-in-feed cards (sweeps beyond the rank limit, census) show by default for 36 h, 7 days in "Seen only";
+    they're dashed (verified False), never held back on confidence, carry reference warnings, and an ASIN we
+    live-check never shows twice."""
+    seen = [_seen("B0SEEN0001", "Kitchen Faucet", 0.58, 9000, 25000, minutes=20 * 60),
+            _seen("B0SEEN0002", "Old Faucet", 0.58, 9000, 25000, minutes=3 * 24 * 60),
+            _seen("B0SEEN0003", "Odd Faucet", 0.80, 5000, 25000, minutes=60,
+                  ref_flags={"flags": ["above_list"]}),
+            _seen("B0TEST0001", "Cordless Drill", 0.70, 3000, 12500, minutes=60),          # also live: dropped
+            _seen("B0CENS0001", "Car Jump Starter", 0.58, 8400, 20000, minutes=90, source="census",
+                  category="Toys & Games", cats=None)]
+    c = app(fetch_seen=lambda: seen, fetch_nodes=lambda: NODES)
+    r = c.get("/api/feed").json()
+    by = {p["asin"]: p for p in r["products"]}
+    assert {"B0SEEN0001", "B0SEEN0003", "B0CENS0001"} <= set(by) and "B0SEEN0002" not in by
+    assert by["B0SEEN0001"]["verified"] is False and by["B0SEEN0001"]["source"] == "feed"
+    assert by["B0SEEN0001"]["subcategory"] == "Kitchen & Bath Fixtures › Kitchen Faucets"   # structural node skipped
+    assert by["B0SEEN0003"]["check_reference"] == ["above_list"] and by["B0SEEN0001"]["check_reference"] == []
+    assert by["B0TEST0001"]["verified"] is True and by["B0TEST0001"]["subcategory"] is None
+    only = {p["asin"] for p in c.get("/api/feed?show=seen").json()["products"]}
+    assert only == {"B0SEEN0001", "B0SEEN0002", "B0SEEN0003", "B0CENS0001"}
+    assert all(p["verified"] for p in c.get("/api/feed?show=live").json()["products"])
+    sub = c.get("/api/feed?sub=Kitchen %26 Bath Fixtures › Kitchen Faucets").json()["products"]
+    assert {p["asin"] for p in sub} == {"B0SEEN0001", "B0SEEN0003"}
+    assert c.get("/api/feed?show=bogus").status_code == 422
+    order = [p["asin"] for p in c.get("/api/feed?show=seen").json()["products"]]
+    assert order.index("B0SEEN0003") > order.index("B0SEEN0001")   # flagged ranks lower despite 80% off
+
+
+def test_cards_group_by_parent_and_best_sort_caps_each_subcategory():
+    """D39: sizes/colours under one parent are one card; "best" lets 2 per subcategory through before the rest."""
+    rings = [_seen(f"B0RING000{i}", f"Smart Ring size {i}", 0.60 + i / 100, 12000, 35000, 60, parent_asin="B0RINGPAR0")
+             for i in range(3)]
+    ice = [_seen(f"B0ICE0000{i}", f"Ice Maker {i}", 0.70 - i / 100, 9000, 30000, 60, cats=[12]) for i in range(4)]
+    c = app(fetch=lambda: [], fetch_seen=lambda: rings + ice + [_seen("B0FAUC0001", "Faucet", 0.55, 9000, 20000, 60)],
+            fetch_nodes=lambda: NODES)
+    r = c.get("/api/feed").json()
+    ring = next(p for p in r["products"] if p["title"].startswith("Smart Ring"))
+    assert ring["variants"] == 3 and ring["unit_count"] == 3 and r["asins"] == 8 and r["count"] == 6
+    subs = [p["subcategory"].split(" › ")[-1] for p in r["products"]]
+    assert subs[:3].count("Ice Makers") <= 2 and subs.count("Ice Makers") == 4      # capped, not dropped
+    by_score = c.get("/api/feed?sort=discount").json()["products"]
+    assert [p["subcategory"].split(" › ")[-1] for p in by_score][:3] == ["Ice Makers"] * 3   # other sorts: no cap
 
 
 def _queue_row(asin, listed, **kw):
@@ -197,7 +241,7 @@ ADMIN = basic("admin", "adm1n")
 def admin_app(**kw):
     kw.setdefault("fetch_review", lambda: [])
     kw.setdefault("fetch_curated", lambda: [])
-    return TestClient(create_app(fetch=rows, fetch_gone=gone_rows, fetch_status=status_stub, password="s3cret",
+    return TestClient(create_app(fetch_seen=lambda: [], fetch=rows, fetch_gone=gone_rows, fetch_status=status_stub, password="s3cret",
                                  admin_password="adm1n", tags=("featured", "newsletter"), **kw))
 
 
@@ -260,7 +304,7 @@ def test_admin_routes_need_the_admin_password():
 
 
 def test_admin_is_closed_without_an_admin_password():
-    c = TestClient(create_app(fetch=rows, fetch_gone=gone_rows, fetch_review=lambda: [], password="", admin_password=""))
+    c = TestClient(create_app(fetch_seen=lambda: [], fetch=rows, fetch_gone=gone_rows, fetch_review=lambda: [], password="", admin_password=""))
     assert c.get("/api/feed").status_code == 200
     assert c.get("/admin/").status_code == 401
     assert c.get("/admin/api/review", headers=basic("admin", "")).status_code == 401
@@ -271,3 +315,20 @@ def test_admin_tags_fall_back_when_the_config_is_missing(tmp_path):
     assert admin_tags(tmp_path / "nope.toml") == ("featured", "newsletter")
     (tmp_path / "p.toml").write_text('[admin]\ntags = ["featured", "deals-of-the-week"]\n')
     assert admin_tags(tmp_path / "p.toml") == ("featured", "deals-of-the-week")
+
+
+def test_inverted_deals_filter_and_list_price_cap():
+    """10-06 A/B test: a third-party-only reference above the list price is "inverted"; the filter shows only those,
+    and the cap measures them against the list price (a shoe: 60% -> ~24%, so it leaves the feed)."""
+    flags = {"list": 8500, "flags": ["third_party_only", "above_list"]}
+    shoe = _seen("B0INVERT01", "Running Shoe", 0.60, 6500, 16000, 60, ref_flags=flags)
+    near = _seen("B0NEARLIST", "Leviton Box", 0.75, 5200, 21200, 60,
+                 ref_flags={"list": 20300, "flags": ["above_list"]})        # Amazon-priced: not inverted
+    c = app(fetch_seen=lambda: [shoe, near], fetch_nodes=lambda: NODES)
+    r = c.get("/api/feed").json()
+    by = {p["asin"]: p for p in r["products"]}
+    assert by["B0INVERT01"]["inverted"] == {"list": 85.0, "pct_off_vs_list": 24} and by["B0NEARLIST"]["inverted"] is None
+    assert r["inverted_count"] == 1
+    assert [p["asin"] for p in c.get("/api/feed?inverted=true").json()["products"]] == ["B0INVERT01"]
+    capped = {p["asin"] for p in c.get("/api/feed?cap=true&tier=all").json()["products"]}
+    assert "B0INVERT01" not in capped and "B0NEARLIST" in capped

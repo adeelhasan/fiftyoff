@@ -99,6 +99,19 @@ ON CONFLICT (asin) DO NOTHING;
 UPDATE review SET status = CASE WHEN reasons = '[]'::jsonb THEN 'cleared' ELSE 'pending' END
 WHERE status IN ('approved', 'rejected');
 
+-- D37 Cloudflare Access users: one row per verified email, upserted as people sign in (throttled).
+-- ADMIN_EMAILS (env) are owners: always admin. Role changes from the People tab are logged.
+CREATE TABLE IF NOT EXISTS app_user (
+  email text PRIMARY KEY CHECK (email = lower(email)),
+  role text NOT NULL DEFAULT 'viewer' CHECK (role IN ('viewer', 'admin')),
+  active bool NOT NULL DEFAULT true, first_seen timestamptz, last_seen timestamptz, note text,
+  updated_at timestamptz, updated_by text
+);
+CREATE TABLE IF NOT EXISTS app_user_log (
+  id bigserial PRIMARY KEY, email text NOT NULL, field text NOT NULL, old text, new text,
+  by text NOT NULL, at timestamptz NOT NULL
+);
+
 -- The one listing predicate (mirrors fiftyoff/curation.py `listed`): an ASIN is out of every feed view when
 -- hidden, or held by the rules without an approval whose reference is still within 20% (REVIEW_REOPEN;
 -- keep in sync). No baseline (decided_ref_cents NULL) fails closed.
@@ -132,7 +145,10 @@ SELECT u.asin, u.offer_id, w.title, w.category, w.image, u.cond, u.last_price_ce
        u.ref_last_cents AS ref_cents, u.strict_last AS strict, u.last_seen_at AS last_confirmed_at,
        u.state = 'unconfirmed' AS unconfirmed, u.keepa_first_seen_at, u.first_seen_at,
        p.brand, p.cat_path, p.reviews, p.rating, p.drops30, p.monthly_sold, p.amazon_sells, p.rank,
-       w.created_at AS priced_at  -- Keepa's creationDate: when the deal's current Resale price was set
+       w.created_at AS priced_at,  -- Keepa's creationDate: when the deal's current Resale price was set
+       w.parent_asin,  -- D39: cards group variants by parent
+       (SELECT k.ref_flags FROM checks k WHERE k.asin = u.asin AND k.offers_ok
+        ORDER BY k.checked_at DESC LIMIT 1) AS ref_flags  -- 10-06: list price for the inversion test
 FROM units u JOIN watch w USING (asin) LEFT JOIN product p USING (asin)
 WHERE u.state <> 'gone' AND w.retired_at IS NULL AND ((u.strict_last >= 0.40 AND u.ref_last_cents >= 10000) OR (u.strict_last >= 0.30 AND u.ref_last_cents >= 20000))
   AND NOT EXISTS (SELECT 1 FROM unlisted x WHERE x.asin = u.asin);  -- D36
@@ -148,25 +164,60 @@ ALTER TABLE census_rows ADD COLUMN IF NOT EXISTS image text;
 ALTER TABLE census_rows ADD COLUMN IF NOT EXISTS ref_parts jsonb;
 ALTER TABLE census_rows ADD COLUMN IF NOT EXISTS ref_flags jsonb;
 
--- Census deals for the preview's "explore" layer (D33): the latest pass per category, qualifying
--- listings only, shaped like deal_internal. Seen in Keepa's deal feed at swept_at, never live-checked.
+-- D39: leaf subcategory ids and 30-day sales-rank drops from each deal-feed object, and the node names.
+ALTER TABLE sweep_rows ADD COLUMN IF NOT EXISTS cats bigint[];
+ALTER TABLE sweep_rows ADD COLUMN IF NOT EXISTS drops30 int;
+ALTER TABLE census_rows ADD COLUMN IF NOT EXISTS cats bigint[];
+ALTER TABLE census_rows ADD COLUMN IF NOT EXISTS drops30 int;
+ALTER TABLE sweep_rows ADD COLUMN IF NOT EXISTS qualify_v text;  -- tracker.QUALIFY_VERSION (rule 8); NULL = before q0.3
+CREATE TABLE IF NOT EXISTS cat_node (
+  id bigint PRIMARY KEY, name text, parent_id bigint, updated_at timestamptz NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS sweep_rows_swept ON sweep_rows (swept_at);
+CREATE INDEX IF NOT EXISTS census_rows_swept ON census_rows (swept_at);
+
+-- D39 seen-in-feed layer: each ASIN's LATEST feed sighting in 7 days, kept only if that sighting is still a
+-- deal. Seen in Keepa's deal feed at swept_at, never live-checked (the API drops ASINs it live-checks, and
+-- shows a 36 h window by default, 7 days in "Seen only"). Shaped like deal_internal, plus parent, leaf
+-- subcategories and reference flags. Holds don't apply here (the flags show on the card); hidden does (D36).
+-- Census (D33/D38): its own qualification (rank limit per category, Like New clothing).
 CREATE OR REPLACE VIEW census_deal AS
-WITH last AS (SELECT cat_id, max(swept_at) AS swept_at FROM census_rows GROUP BY cat_id)
-SELECT DISTINCT ON (c.asin, c.cond, c.resale_cents)
-       c.asin, NULL::bigint AS offer_id, c.title, c.category, c.image, c.cond, c.resale_cents, c.ref_cents,
+WITH c AS (SELECT DISTINCT ON (asin) * FROM census_rows WHERE swept_at > now() - interval '7 days'
+           ORDER BY asin, swept_at DESC, id DESC)
+SELECT c.asin, NULL::bigint AS offer_id, c.title, c.category, c.image, c.cond, c.resale_cents, c.ref_cents,
        c.strict, c.swept_at AS last_confirmed_at, false AS unconfirmed,
        NULL::timestamptz AS keepa_first_seen_at, NULL::timestamptz AS first_seen_at,
        NULL::text AS brand, NULL::text[] AS cat_path, NULL::int AS reviews, NULL::real AS rating,
-       NULL::int AS drops30, NULL::int AS monthly_sold, NULL::bool AS amazon_sells, c.rank,
-       to_timestamp((c.creation_kmin + 21564000) * 60.0) AS priced_at, c.cat_id
-FROM census_rows c JOIN last USING (cat_id, swept_at)
-WHERE c.qualifies
-  AND NOT EXISTS (SELECT 1 FROM unlisted x WHERE x.asin = c.asin)  -- D36
-ORDER BY c.asin, c.cond, c.resale_cents, c.id DESC;
+       c.drops30, NULL::int AS monthly_sold, NULL::bool AS amazon_sells, c.rank,
+       to_timestamp((c.creation_kmin + 21564000) * 60.0) AS priced_at, c.cat_id,
+       c.parent_asin, c.cats, c.ref_flags
+FROM c
+-- D39 (10-06): seeing has no rank limit here either (Clothing had 486 Like New 50%+ deals in a week, 22 within
+-- 50k). Tiers mirror TrackerConfig.tiers; the Clothing condition rule mirrors CENSUS_CONDS (D38).
+WHERE ((c.strict >= 0.40 AND c.ref_cents >= 10000) OR (c.strict >= 0.30 AND c.ref_cents >= 20000))
+  AND (c.cat_id <> 7141123011 OR c.cond = 'Used - Like New')
+  AND NOT EXISTS (SELECT 1 FROM curation x WHERE x.asin = c.asin AND x.visibility = 'hidden');
+
+-- Tracked roots: the deal tiers with NO rank limit (D39: depth). Tiers mirror TrackerConfig.tiers.
+CREATE OR REPLACE VIEW sweep_deal AS
+WITH s AS (SELECT DISTINCT ON (asin) * FROM sweep_rows WHERE swept_at > now() - interval '7 days'
+           ORDER BY asin, swept_at DESC, id DESC)
+SELECT s.asin, NULL::bigint AS offer_id, s.title, s.category, s.image, s.cond, s.resale_cents, s.ref_cents,
+       s.strict, s.swept_at AS last_confirmed_at, false AS unconfirmed,
+       NULL::timestamptz AS keepa_first_seen_at, NULL::timestamptz AS first_seen_at,
+       NULL::text AS brand, NULL::text[] AS cat_path, NULL::int AS reviews, NULL::real AS rating,
+       s.drops30, NULL::int AS monthly_sold, NULL::bool AS amazon_sells, s.rank,
+       to_timestamp((s.creation_kmin + 21564000) * 60.0) AS priced_at, NULL::bigint AS cat_id,
+       s.parent_asin, s.cats, s.ref_flags
+FROM s
+WHERE ((s.strict >= 0.40 AND s.ref_cents >= 10000) OR (s.strict >= 0.30 AND s.ref_cents >= 20000))
+  AND NOT EXISTS (SELECT 1 FROM curation x WHERE x.asin = s.asin AND x.visibility = 'hidden');
 
 -- Latest pass per category, one row per listing (ASIN + condition + price), summarised. ASIN-level counts.
 CREATE OR REPLACE VIEW census_summary AS
-WITH last AS (SELECT cat_id, max(swept_at) AS swept_at FROM census_rows GROUP BY cat_id),
+WITH last AS (SELECT cat_id, max(swept_at) AS swept_at FROM census_rows
+              WHERE swept_at > now() - interval '24 hours' GROUP BY cat_id),  -- D38: dropped categories age out
 r AS (SELECT c.* FROM census_rows c JOIN last USING (cat_id, swept_at))
 SELECT cat_id, max(category) AS category, max(swept_at) AS swept_at,
   count(DISTINCT (asin, cond, resale_cents)) AS listings,  -- a page fetched twice in one pass counts once
@@ -306,11 +357,12 @@ class PgStore:
         with self.conn.cursor() as cur:
             cur.executemany(
                 "INSERT INTO sweep_rows (swept_at, asin, parent_asin, category, title, resale_cents, ref_cents, strict, "
-                "keepa_pct, cond, comment, rank, creation_kmin, image, qualifies, formula, ref_parts, ref_flags) "
-                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                "keepa_pct, cond, comment, rank, creation_kmin, image, qualifies, formula, ref_parts, ref_flags, "
+                "cats, drops30, qualify_v) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                 [(_ts(t), r["asin"], r["parent"], r["cat"], r["title"], r["resale"], r["ref"], r["strict"],
                   r["keepa_pct"], r["cond"], r["comment"], r["rank"], r["creation"], r["image"], r["qualifies"],
-                  r["formula"], _json(r.get("ref_parts")), _json(r.get("ref_flags"))) for r in rows])
+                  r["formula"], _json(r.get("ref_parts")), _json(r.get("ref_flags")), r.get("cats"),
+                  r.get("drops30"), r.get("qualify_v")) for r in rows])
 
     def save_product(self, t, asin, sig):
         cols = list(sig)
@@ -326,11 +378,28 @@ class PgStore:
         with self.conn.cursor() as cur:
             cur.executemany(
                 "INSERT INTO census_rows (swept_at, cat_id, asin, parent_asin, category, title, resale_cents, ref_cents, "
-                "strict, keepa_pct, cond, rank, creation_kmin, qualifies, formula, image, ref_parts, ref_flags) "
-                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                "strict, keepa_pct, cond, rank, creation_kmin, qualifies, formula, image, ref_parts, ref_flags, cats, "
+                "drops30) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                 [(_ts(t), cat_id, r["asin"], r["parent"], r["cat"], r["title"], r["resale"], r["ref"], r["strict"],
                   r["keepa_pct"], r["cond"], r["rank"], r["creation"], r["qualifies"], r["formula"], r.get("image"),
-                  _json(r.get("ref_parts")), _json(r.get("ref_flags"))) for r in rows])
+                  _json(r.get("ref_parts")), _json(r.get("ref_flags")), r.get("cats"), r.get("drops30")) for r in rows])
+
+    def known_cats(self):
+        return {r[0] for r in self.conn.execute("SELECT id FROM cat_node")}
+
+    def unnamed_cats(self):
+        """Leaf ids on feed rows without a cat_node row, those with the most 40%+ rows first."""
+        return [r[0] for r in self.conn.execute(
+            "SELECT id FROM (SELECT unnest(cats) id, strict FROM sweep_rows UNION ALL "
+            "SELECT unnest(cats), strict FROM census_rows) x WHERE id NOT IN (SELECT id FROM cat_node) "
+            "GROUP BY id ORDER BY count(*) FILTER (WHERE strict >= 0.4) DESC, count(*) DESC")]
+
+    def save_cat_nodes(self, t, nodes):
+        with self.conn.cursor() as cur:  # a named node is never overwritten by an unnamed one
+            cur.executemany(
+                "INSERT INTO cat_node (id, name, parent_id, updated_at) VALUES (%s,%s,%s,%s) ON CONFLICT (id) DO UPDATE "
+                "SET name = COALESCE(EXCLUDED.name, cat_node.name), parent_id = COALESCE(EXCLUDED.parent_id, cat_node.parent_id), "
+                "updated_at = EXCLUDED.updated_at", [(cid, name, parent, _ts(t)) for cid, name, parent in nodes])
 
     def get_review(self, asin):
         from psycopg.rows import dict_row

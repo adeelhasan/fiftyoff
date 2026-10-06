@@ -73,6 +73,10 @@ services:
       FEED_DATABASE_URL: postgresql://feed_reader:${FEED_READER_PASSWORD:-feed-dev}@db:5432/fiftyoff
       PREVIEW_PASSWORD: ${PREVIEW_PASSWORD:-}   # set -> browser login popup (user "fiftyoff"); empty -> open
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}       # set -> /admin opens to user "admin" (D36); empty -> closed
+      # D37 Cloudflare Access: team name + the application's AUD tag turn on token checks; ADMIN_EMAILS = owners
+      CF_ACCESS_TEAM: ${CF_ACCESS_TEAM:-}
+      CF_ACCESS_AUD: ${CF_ACCESS_AUD:-}
+      ADMIN_EMAILS: ${ADMIN_EMAILS:-}
     volumes:
       - ./preflight.toml:/app/preflight.toml:ro   # [admin] tags
     ports:

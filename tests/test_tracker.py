@@ -8,7 +8,7 @@ import pytest
 from fiftyoff import analysis
 
 from fiftyoff.keepa import Keepa, Ledger, unix_to_keepa
-from fiftyoff.tracker import (GONE_AFTER, HOUR, MemoryStore, Tracker, TrackerConfig, lifespan, qualifies,
+from fiftyoff.tracker import (DEEP_SLICES, GONE_AFTER, HOUR, MemoryStore, Tracker, TrackerConfig, lifespan, qualifies,
                               strict_ref_from_stats)
 
 T0 = 1_790_000_000.0
@@ -46,6 +46,11 @@ class Script:
             dr = self.pages[body["page"]] if body["page"] < len(self.pages) else []
             return 200, {**env, "tokensConsumed": 5,
                          "deals": {"dr": dr, "categoryIds": [228013], "categoryNames": ["Tools"]}}
+        if endpoint == "category":
+            ids = [int(x) for x in params["category"].split(",")]
+            known = {i: {"catId": i, "name": f"N{i}", "parent": 99} for i in ids if i != 404}
+            return 200, {**env, "tokensConsumed": 1, "categories": known,
+                         "categoryParents": {99: {"catId": 99, "name": "Root", "parent": 0}}}
         seq = self.products[params["asin"]]
         p = seq.pop(0) if len(seq) > 1 else seq[0]
         return 200, {**env, "tokensConsumed": 7, "products": [p]}
@@ -73,6 +78,7 @@ def rig(tmp_path):
     keepa = Keepa(script, Ledger(tmp_path / "ledger.jsonl"), tmp_path / "raw", token_cap=10_000,
                   sleep=lambda s: None, raw_gzip=True)
     tr = Tracker(TrackerConfig(), keepa, store, clock=clock, sleep=lambda s: None, log=lambda m: None)
+    tr.last_full_sweep = T0  # a deep pass just finished; the deep sweep has its own test
     return clock, script, store, tr, tmp_path
 
 
@@ -97,8 +103,8 @@ def test_sweep_watches_qualifying_and_stops_incrementally(rig):
     now_k = unix_to_keepa(T0)
     full = [deal(f"A{i}", 9000, 20000, now_k - i) for i in range(150)]   # 55% off a $200 ref
     script.pages = [full, full, [deal("OLD", 9000, 20000, now_k - 5000)]]
-    assert tr.sweep() == 3                       # first sweep is full: pages until a short page
-    assert len(tr.watch) == 151 and store.state["last_full_sweep"] == T0
+    assert tr.sweep() == 3                       # first sweep: no cutoff, pages until a short page
+    assert len(tr.watch) == 151
     clock.t += 1800
     script.pages = [[deal(f"N{i}", 9000, 20000, unix_to_keepa(clock.t) - 2000) for i in range(150)]] * 5
     assert tr.sweep() == 1                       # incremental: page 0 already older than last sweep - 1 h
@@ -163,6 +169,7 @@ def test_scheduler_prefers_overdue_new_items_and_idles_when_nothing_due(rig):
     old = unix_to_keepa(T0)
     script.pages = [[deal("A", 9000, 20000, old), deal("B", 9000, 20000, old)]]
     tr.sweep()
+    tr.cat_queue.clear()                                   # subcategory lookups have their own test
     script.products = {"A": [product([(1, 9000)])], "B": [product([(2, 9000)])]}
     assert tr.step() == "check" and tr.step() == "check"   # both never checked
     assert tr.step() == "idle"                             # nothing due yet
@@ -237,14 +244,31 @@ def test_first_check_brackets_existing_units_with_keepa_offer_looks(rig):
     assert ls["confidence"] == "HIGH"                    # 30 + 15 min of slack, and absent 24 h+
 
 
-def test_full_sweep_reaches_further_than_incremental(rig):
+def test_deep_sweep_goes_page_by_page_through_slices_under_the_cap(rig):
+    """D39: one page per slot, one query per slice (H&K split by price), a slice stops at a short page or at
+    Keepa's 10k cap, and the pass stamps last_full_sweep with its start."""
     clock, script, store, tr, _ = rig
     page = [deal(f"A{i}", 9000, 20000, unix_to_keepa(T0) - i) for i in range(150)]
-    script.pages = [page] * 40
-    assert tr.sweep() == 41                              # full: past max_pages (20) until the empty page 40
-    clock.t += 1800
-    script.calls.clear()
-    assert tr.sweep() == 1                               # incremental: stops at the previous sweep
+    script.pages = [page, page[:3]]                      # every slice: one full page, then a short one
+    tr.last_sweep, tr.cfg.deep_slice_max_pages, tr.last_full_sweep = clock.t + 10 * HOUR, 67, 0.0
+    tr.cfg.census_enabled = False
+    steps = []
+    for _ in range(2 * len(DEEP_SLICES)):
+        clock.t += 60
+        steps.append(tr.step())
+    assert steps == ["deep"] * (2 * len(DEEP_SLICES))
+    bodies = [b for e, _, b in script.calls if e == "deal"]
+    assert [b["includeCategories"] for b in bodies[::2]] == [c for c, _ in DEEP_SLICES]
+    hk = [b["currentRange"] for b in bodies[::2] if b["includeCategories"] == [1055398]]
+    assert hk == [[2000, 6000], [6000, 15000], [15000, 100_000_00]]   # the $20 floor still applies
+    assert store.state["last_full_sweep"] == T0 + 60 and tr.deep_slice == 0 and tr.deep_page == 0
+    clock.t += 60
+    assert tr.step() != "deep"                           # next pass only after full_sweep_hours
+    script.pages = [page] * 3
+    tr.cfg.deep_slice_max_pages = 2
+    clock.t += 12 * HOUR
+    tr.deep(); clock.t += 60; tr.deep()
+    assert tr.deep_slice == 1                            # cap: the slice ends after 2 full pages
 
 
 def test_unlock_works_with_a_spent_ledger(tmp_path, monkeypatch):
@@ -324,7 +348,8 @@ def test_priority_retries_then_fast_lane_then_most_overdue(rig):
                        "FAIL": [product([(3, 9000)]), product([(3, 9000)], ok=False)]}
     for a in ("OLD", "HOT", "FAIL"):
         tr.check(a)
-    clock.t += 5 * HOUR                                     # OLD is 5x overdue, HOT 20x, FAIL about to fail
+    tr.cfg.slow_minutes = 60
+    clock.t += 90 * 60                                      # OLD 1.5x overdue, HOT 6x (still in its 2 h fast window)
     tr.check("FAIL")                                        # fails: a retry is due in 5 min
     clock.t += 5 * 60
     assert tr.next_check(clock.t) == "FAIL"                 # retry beats everything
@@ -410,11 +435,104 @@ def test_check_holds_a_suspect_deal_and_clears_it(rig):
     assert store.reviews["A"]["status"] == "cleared" and store.reviews["A"]["reasons"] == []
 
 
-def test_census_holds_only_qualifying_suspects(rig):
+def test_census_records_flags_but_holds_nothing(rig):
     clock, script, store, tr, _ = rig
     tr.cfg.census_enabled, tr.cfg.census_cats = True, [1]
     tp = deal("TP", 5000, 20000, 1)                             # 75% off, New only -> too_good
     ok = {**deal("OK", 5000, 20000, 1), "current": arr(i0=20000, i1=20000, i3=1000, i9=5000)}
     script.pages = [[tp, ok]]
     tr.census()
-    assert set(store.reviews) == {"TP"} and store.reviews["TP"]["reasons"] == ["too_good"]
+    assert not store.reviews                     # D39: census deals carry their flags on the card instead of a hold
+    assert store.census[0]["ref_flags"]["flags"] == ["third_party_only"]
+
+
+def test_census_rules_per_category(rig):
+    """D38: toys get a longer rank limit; clothing qualifies only Like New."""
+    clock, script, store, tr, _ = rig
+    tr.cfg.census_enabled, tr.cfg.census_cats = True, [165793011, 7141123011, 1064954]
+    toy = deal("TOY", 9000, 20000, 1, rank=200000)          # 55% off, rank past the 50k default
+    worn = {**deal("WORN", 9000, 20000, 1), "warehouseCondition": 3}   # Very Good
+    likenew = deal("LN", 9000, 20000, 1)                      # Like New
+    for page in ([toy], [worn, likenew], [toy]):            # each category's pass is a single page 0
+        script.pages = [page]
+        tr.census()
+    q = {(r["cat_id"], r["asin"]): r["qualifies"] for r in store.census}
+    assert q[(165793011, "TOY")] and not q[(1064954, "TOY")]
+    assert q[(7141123011, "LN")] and not q[(7141123011, "WORN")]
+
+
+def test_feed_rows_carry_subcategories_and_lookups_name_them(rig):
+    """D39: leaf ids and 30-day rank drops on every feed row; unknown ids are named by one lookup call
+    (parents included), ids Keepa doesn't know are stored unnamed and never retried; checks add categoryTree free."""
+    clock, script, store, tr, _ = rig
+    script.pages = [[{**deal("A", 9000, 20000, unix_to_keepa(T0)), "categories": [11, 404], "salesRankDrops30": 7},
+                     {**deal("B", 9000, 20000, unix_to_keepa(T0)), "categories": [11], "salesRankDrops30": -1}]]
+    tr.sweep()
+    a, b = store.sweep_rows
+    assert a["cats"] == [11, 404] and a["drops30"] == 7 and b["drops30"] is None
+    assert tr.cat_queue == [11, 404]
+    tr.last_sweep = clock.t + 10 * HOUR
+    assert tr.step() == "cats"
+    assert store.cat_nodes[11] == ("N11", 99) and store.cat_nodes[99] == ("Root", None)
+    assert store.cat_nodes[404] == (None, None) and not tr.cat_queue
+    tr.sweep()
+    assert not tr.cat_queue                                     # known now, never queued again
+    script.products["A"] = [{**product([(7, 9000)]), "categoryTree": [{"catId": 1, "name": "Tools"},
+                                                                       {"catId": 2, "name": "Saws"}]}]
+    tr.check("A")
+    assert store.cat_nodes[2] == ("Saws", 1) and store.cat_nodes[1] == ("Tools", None)
+
+
+def test_fast_lane_tapers_and_unitless_watches_go_hourly(rig):
+    """D40: a new 50%+ deal is checked every 15 min for its first 2 h, then hourly until 6 h; a watch with no
+    Resale unit gets one prompt check, then hourly; near misses below watch_min_strict aren't watched at all."""
+    clock, script, store, tr, _ = rig
+    script.pages = [[deal("A", 9000, 20000, unix_to_keepa(T0)), deal("E", 9000, 20000, unix_to_keepa(T0))]]
+    tr.sweep()
+    assert tr.interval(tr.watch["A"], clock.t) == 15 * 60          # never checked: prompt
+    script.products = {"A": [product([(7, 9000)])], "E": [product([])]}
+    tr.check("A"); tr.check("E")
+    assert tr.interval(tr.watch["A"], clock.t + 90 * 60) == 15 * 60     # 50%+, 1.5 h old
+    assert tr.interval(tr.watch["A"], clock.t + 150 * 60) == 60 * 60    # 2.5 h old: hourly
+    assert tr.interval(tr.watch["A"], clock.t + 7 * HOUR) == tr.cfg.slow_minutes * 60
+    assert tr.interval(tr.watch["E"], clock.t + 30 * 60) == 60 * 60     # no unit after its first check
+    tr.cfg.watch_min_strict = 0.47
+    clock.t += 1800
+    script.pages = [[deal("N", 11000, 20000, unix_to_keepa(clock.t)),    # 45% off: seen from the sweep only
+                     deal("H", 9600, 20000, unix_to_keepa(clock.t))]]    # 52%
+    tr.sweep()
+    assert "N" not in tr.watch and "H" in tr.watch
+    assert {r["asin"]: r["qualifies"] for r in store.sweep_rows[-2:]} == {"N": False, "H": True}
+
+
+def test_deep_band_selling_deals_are_live_checked_when_enabled(rig):
+    """D40 step 5: beyond the rank limit, a 50%+ deal with enough 30-day rank drops is watched (off by default),
+    and its checks keep it qualifying instead of retiring it."""
+    clock, script, store, tr, _ = rig
+    deep = lambda a, drops: {**deal(a, 9000, 20000, unix_to_keepa(T0), rank=200_000), "salesRankDrops30": drops}
+    script.pages = [[deep("S", 20), deep("Q", 2)]]
+    tr.sweep()
+    assert not tr.watch                                        # off by default
+    tr.cfg.deep_watch_min_drops30 = 12
+    clock.t += 1800
+    tr.sweep()
+    assert set(tr.watch) == {"S"}                              # sells: watched; quiet one stays seen-only
+    script.products["S"] = [product([(7, 9000)])]
+    clock.t += 3 * HOUR; tr.check("S")
+    assert tr.watch["S"].last_qualifying == clock.t and tr.watch["S"].retired is None
+
+
+
+def test_fresh_headline_past_fast_window_outranks_routine_rechecks(rig):
+    """D40 fix: a 50%+ deal 2-6 h old (hourly) is checked before more-overdue settled watches."""
+    clock, script, store, tr, _ = rig
+    old, now = unix_to_keepa(T0 - 30 * HOUR), unix_to_keepa(T0)
+    script.pages = [[deal("OLD", 9000, 20000, old), deal("WARM", 9000, 20000, now)]]
+    tr.sweep()
+    tr.last_sweep, tr.cfg.slow_minutes = clock.t + 30 * HOUR, 60
+    script.products = {"OLD": [product([(1, 9000)])], "WARM": [product([(2, 9000)])]}
+    tr.check("OLD"); tr.check("WARM")
+    clock.t += 3 * HOUR                                     # OLD 3x overdue; WARM 3 h old, hourly, 3x overdue
+    tr.watch["OLD"].last_check -= 5 * HOUR                  # make OLD far more overdue (8x)
+    assert tr.interval(tr.watch["WARM"], clock.t) == 60 * 60
+    assert tr.next_check(clock.t) == "WARM"

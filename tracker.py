@@ -26,7 +26,7 @@ from pathlib import Path
 
 import preflight
 from fiftyoff.keepa import FixtureTransport, Keepa, Ledger, LiveTransport, load_api_key
-from fiftyoff.tracker import MemoryStore, Tracker, TrackerConfig, iso, lifespan
+from fiftyoff.tracker import DEEP_SLICES, MemoryStore, Tracker, TrackerConfig, iso, lifespan
 
 APPROVAL = Path(".fiftyoff/tracker-approval.json")
 ROOT = Path("research/tracker")
@@ -50,8 +50,8 @@ def read_approval(now: datetime) -> dict | None:
 def plan_lines(c: TrackerConfig) -> list[str]:
     tiers = " or ".join(f"strict {d:.0%}+ with ${r // 100}+ reference" for d, r in c.tiers)
     return [
-        f"TRACKER — sweep every {c.sweep_minutes} min (incremental, ~1-2 pages; full every {c.full_sweep_hours} h, "
-        f"≤{c.full_sweep_max_pages} pages × 5 tokens)",
+        f"TRACKER — sweep every {c.sweep_minutes} min (~1-3 pages); deep sweep every {c.full_sweep_hours} h in "
+        f"{len(DEEP_SLICES)} slices under Keepa's 10k cap, one page per {c.deep_minutes:g} min (~160 pages × 5 tokens)",
         f"  qualifies: {tiers}; sales rank ≤{c.max_rank:,}; 5 target categories",
         f"  live checks (~{c.check_estimate} tokens): every {c.fast_minutes} min for new 50%+ deals (<6 h), "
         f"{c.new_near_miss_minutes} min for new near misses, {c.unconfirmed_minutes} min while a unit is unconfirmed, "
@@ -67,7 +67,7 @@ def plan_lines(c: TrackerConfig) -> list[str]:
 
 
 def checks_per_hour(c: TrackerConfig) -> float:
-    sweeps = (2 * 5 / c.sweep_minutes) + (c.full_sweep_max_pages * 5 / (c.full_sweep_hours * 60))  # tokens/min
+    sweeps = (2 * 5 / c.sweep_minutes) + (160 * 5 / (c.full_sweep_hours * 60))  # tokens/min; ~160 deep pages (D39)
     return (20 - sweeps) / c.check_estimate * 60
 
 
