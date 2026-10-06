@@ -61,6 +61,7 @@ table.list { width: 100%; border-collapse: collapse; min-width: 760px }
 .tip table { width: 100%; border-collapse: collapse }
 .tip td { padding: 1px 0 }
 .tip td:last-child { text-align: right; font-weight: 700 }
+.tip p { margin: 4px 0 0; color: var(--muted); font-size: 11px }
 .tip tr.total td { border-top: 1px solid var(--line); padding-top: 3px }
 .tip .w { color: var(--muted) }
 .empty { padding: 24px; text-align: center; color: var(--muted) }
@@ -115,11 +116,13 @@ function listed(l) {
   return `${txt}<span class="conf ${l.confidence}">${l.confidence}</span>`;
 }
 
-function scoreBox(score, s) {
+// Sales rank: sent to admins only (D24)
+const rankLine = (rank) => rank === undefined ? "" : `<p>Sales rank: <b>${rank == null ? "none" : "#" + rank.toLocaleString()}</b></p>`;
+function scoreBox(score, s, rank) {
   const r = (label, k, w) => `<tr><td>${label} <span class="w">${w}</span></td><td>${s[k].toFixed(1)}</td></tr>`;
   return `<span class="scorebox"><button class="score" type="button" aria-label="Deal score ${score}, show breakdown">${score}</button>
     <span class="tip" role="tooltip"><table>${r("Discount", "discount", "40%")}${r("Demand", "demand", "25%")}${r("$ saved", "savings", "25%")}${r("Rating", "rating", "10%")}
-    <tr class="total"><td>× ${COND[String(s.condition_factor)] || ""} ${s.condition_factor}</td><td>${score}</td></tr></table></span></span>`;
+    <tr class="total"><td>× ${COND[String(s.condition_factor)] || ""} ${s.condition_factor}</td><td>${score}</td></tr></table>${rankLine(rank)}</span></span>`;
 }
 
 function row(g) {
@@ -129,7 +132,7 @@ function row(g) {
       <div class="sub">${esc(String(g.condition).replace(/^Used - /, ""))} · ${esc(g.category)}${g.near_miss ? `<span class="near">near miss</span>` : ""}</div></td>
     <td class="n">${usd(g.price)}</td>
     <td class="n"><span class="off">${g.pct_off}%</span></td>
-    <td class="n">${scoreBox(g.score, g.score_parts)}</td>
+    <td class="n">${scoreBox(g.score, g.score_parts, g.rank)}</td>
     <td>${listed(g.lifespan)}</td>
     <td class="n">${ago(g.minutes_since_seen)}</td>
   </tr>`;

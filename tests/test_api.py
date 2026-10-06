@@ -34,7 +34,7 @@ def gone_rows():
              "gone_at": now - timedelta(hours=2.5), "revivals": 0}]
 
 
-PUBLIC_PRODUCT = {"asin", "title", "category", "image", "url", "score", "score_parts", "pct_off", "price", "near_miss",
+PUBLIC_PRODUCT = {"appeal", "delight", "asin", "title", "category", "image", "url", "score", "score_parts", "pct_off", "price", "near_miss",
                   "unit_count", "minutes_since_confirmed", "minutes_since_priced", "is_new", "confidence", "verified", "units",
                   "subcategory", "variants", "check_reference", "source", "inverted"}
 PUBLIC_UNIT = {"condition", "price", "pct_off", "score", "minutes_since_confirmed", "unconfirmed", "confidence"}
@@ -57,6 +57,7 @@ def app(**kw):
     kw.setdefault("fetch_review", lambda: [])
     kw.setdefault("fetch_seen", lambda: [])
     kw.setdefault("fetch", rows)
+    kw.setdefault("fetch_appeal", lambda: [])
     return TestClient(create_app(fetch_gone=gone_rows, fetch_status=status_stub, password="", **kw))
 
 
@@ -303,6 +304,17 @@ def test_admin_routes_need_the_admin_password():
     assert c.get("/api/review", headers=ADMIN).status_code == 404            # the D35 routes are gone
 
 
+def test_rank_reaches_admins_only():
+    """D24: the sales rank in the score tooltip goes to admins; the preview login never gets it."""
+    c = admin_app()
+    preview = basic("fiftyoff", "s3cret")
+    for path, key in (("/api/feed?tier=all&acceptable=true", "products"), ("/api/gone", "gone")):
+        assert all("rank" not in p for p in c.get(path, headers=preview).json()[key])
+        items = c.get(path, headers=ADMIN).json()[key]
+        assert items and all("rank" in p for p in items)
+    assert c.get("/api/feed?tier=all&acceptable=true", headers=ADMIN).json()["products"][0]["rank"] is not None
+
+
 def test_admin_is_closed_without_an_admin_password():
     c = TestClient(create_app(fetch_seen=lambda: [], fetch=rows, fetch_gone=gone_rows, fetch_review=lambda: [], password="", admin_password=""))
     assert c.get("/api/feed").status_code == 200
@@ -332,3 +344,17 @@ def test_inverted_deals_filter_and_list_price_cap():
     assert [p["asin"] for p in c.get("/api/feed?inverted=true").json()["products"]] == ["B0INVERT01"]
     capped = {p["asin"] for p in c.get("/api/feed?cap=true&tier=all").json()["products"]}
     assert "B0INVERT01" not in capped and "B0NEARLIST" in capped
+
+
+def test_delight_ranks_appealing_products_first_and_appeal_min_filters():
+    """D42: the model's appeal judgement (per parent, else ASIN) feeds delight; unrated products count as 4."""
+    keys = [r.get("parent_asin") or r["asin"] for r in rows()]
+    judged = [{"key": keys[-1], "score": 9, "tags": ["travel"], "why": "Samsonite luggage set", "model": "sonnet", "prompt_v": "a0.1"}]
+    c = app(fetch_appeal=lambda: judged)
+    r = c.get("/api/feed?tier=all&acceptable=true&sort=delight").json()
+    top = r["products"][0]
+    assert (top.get("appeal") or {}).get("score") == 9 and r["delight_version"] == "l0.1"
+    assert top["delight"] == round(9 * top["pct_off"] / 10 * top["score_parts"]["condition_factor"], 1)
+    assert all(p["appeal"] is None for p in r["products"][1:])
+    only = c.get("/api/feed?tier=all&acceptable=true&appeal_min=7").json()["products"]
+    assert [p["appeal"]["score"] for p in only] == [9]

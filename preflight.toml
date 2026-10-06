@@ -126,7 +126,7 @@ deep_minutes = 1                # D39: the 12 h deep sweep goes one page per min
 sweep_min_delta = 30            # Keepa nominal floor for the feed query; strict tiers below decide
 sweep_min_resale_cents = 2000
 tiers = [[0.40, 10000], [0.30, 20000]]   # strict >= 40% with $100+ reference, or >= 30% with $200+
-max_rank = 50000
+max_rank = 0                    # D41: no rank limit for live checks (was 50000; the census keeps 50k)
 check_estimate = 7              # observed per check in D17 (13 = two offer pages, worst case)
 fast_minutes = 15               # new watch or unit (<6 h)
 fast_window_minutes = 120       # D40: 15-min checks for a new 50%+ deal's first 2 h only, then hourly to 6 h

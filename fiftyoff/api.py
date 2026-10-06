@@ -45,7 +45,19 @@ CONFIG = Path(__file__).parent.parent / "preflight.toml"
 NEW_HOURS = 24             # a deal is "new" when Keepa saw its current price set within this window
 HEADLINE = 0.50            # D22: the default view is strict 50%+; below it is a labelled "near miss"
 ACCEPTABLE = "Used - Acceptable"
+APPEAL_MODEL = "sonnet"    # D42: whose appeal judgement the feed uses (appeal.model)
+UNRATED_APPEAL = 4         # D42: a product the model hasn't rated yet sorts as "meh", not as junk or as a find
+DELIGHT_VERSION = "l0.1"   # delight = appeal/10 x % off x condition factor, 0-100
+
+
+def delight(p: dict) -> float:
+    """D42: what the visitor should see first: a thing people want (appeal), really half off, in good shape."""
+    a = p["appeal"]["score"] if p.get("appeal") else UNRATED_APPEAL
+    return round(a * p["pct_off"] / 10 * p["score_parts"]["condition_factor"], 1)
+
+
 SORTS = {
+    "delight": lambda p: (-p["delight"], -p["score"]),
     "best": lambda p: -p["score"],
     "discount": lambda p: -p["pct_off"],
     "newest": lambda p: (p["minutes_since_priced"] is None, p["minutes_since_priced"] or 0),
@@ -69,6 +81,15 @@ def pg_seen() -> list[dict]:
     """D39: the seen-in-feed layer: tracked roots' sweeps (no rank limit) and the census (current categories)."""
     return [{**r, "source": "feed"} for r in _query("sweep_deal")] + \
            [{**r, "source": "census"} for r in _query("census_deal") if r["cat_id"] in CENSUS_CATS]
+
+
+def pg_appeal() -> list[dict]:
+    """D42: the model's appeal judgement per product key, from the configured model."""
+    import psycopg
+    from psycopg.rows import dict_row
+    with psycopg.connect(os.environ["FEED_DATABASE_URL"], row_factory=dict_row) as conn:
+        return conn.execute("SELECT key, score, tags, why, model, prompt_v FROM appeal WHERE model = %s",
+                            (APPEAL_MODEL,)).fetchall()
 
 
 def pg_nodes() -> list[dict]:
@@ -264,9 +285,10 @@ def _keep(r: dict, tier: str, acceptable: bool, category: str | None, q: str | N
             and matches(r["title"], q))
 
 
-def group_products(rows: list[dict], now: datetime) -> list[dict]:
+def group_products(rows: list[dict], now: datetime, internal: bool = False) -> list[dict]:
     """One card per parent product (D39: sizes and colours together), live-checked and seen-only kept apart.
-    Units best-first; `variants` counts the ASINs under the card (rule 9: ASIN and parent counts stay separate)."""
+    Units best-first; `variants` counts the ASINs under the card (rule 9: ASIN and parent counts stay separate).
+    `internal` (admins only, D24): also the shown ASIN's sales rank."""
     by: dict[tuple, list[dict]] = {}
     for r in rows:
         by.setdefault((r.get("parent_asin") or r["asin"], r.get("source") is None), []).append(r)
@@ -295,7 +317,10 @@ def group_products(rows: list[dict], now: datetime) -> list[dict]:
             # D33/D39: seen in Keepa's deal feed (sweeps beyond the rank limit, census) but never live-checked by us
             "verified": not seen_only, "source": best.get("source") or "live",
             "units": units,
+            "appeal": best.get("_appeal"),
+            **({"rank": best.get("rank")} if internal else {}),
         })
+        out[-1]["delight"] = delight(out[-1])
     return out
 
 
@@ -323,6 +348,7 @@ def gone_lifespan(r: dict) -> dict | None:
 def create_app(fetch: Callable[[], list[dict]] = pg_live, fetch_gone: Callable[[], list[dict]] = pg_gone,
                fetch_status: Callable[[], dict] = pg_status, fetch_seen: Callable[[], list[dict]] = pg_seen,
                fetch_nodes: Callable[[], list[dict]] = pg_nodes,
+               fetch_appeal: Callable[[], list[dict]] = pg_appeal,
                fetch_review: Callable[[], list[dict]] = pg_review,
                fetch_curated: Callable[[], list[dict]] = pg_curated,
                curate: Callable[[str, dict, tuple, str], dict] = pg_curate,
@@ -432,15 +458,21 @@ def create_app(fetch: Callable[[], list[dict]] = pg_live, fetch_gone: Callable[[
         nodes = {}
         if any(r.get("cats") and not r.get("cat_path") for r in seen):
             nodes = {n["id"]: (n["name"], n["parent_id"]) for n in cached("nodes", fetch_nodes)}
-        return [{**r, "_sub": subcategory(r, nodes), "_inv": inversion(r)} for r in live + seen]
+        try:
+            appeal = {a["key"]: {"score": a["score"], "tags": a["tags"] or [], "why": a["why"]}
+                      for a in cached("appeal", fetch_appeal)}
+        except Exception:  # noqa: BLE001 — the judgement is an extra; the feed works without it
+            appeal = {}
+        return [{**r, "_sub": subcategory(r, nodes), "_inv": inversion(r),
+                 "_appeal": appeal.get(r.get("parent_asin") or r["asin"]) or appeal.get(r["asin"])} for r in live + seen]
 
     @app.get("/api/feed")
-    def feed(category: str | None = None,
-             sort: str = Query("best", pattern="^(best|discount|newest|confirmed|price)$"), fresh: bool = False,
+    def feed(request: Request, category: str | None = None,
+             sort: str = Query("best", pattern="^(delight|best|discount|newest|confirmed|price)$"), fresh: bool = False,
              show: str = Query("all", pattern="^(all|live|seen)$"), sub: str | None = Query(None, max_length=120),
              tier: str = Query("50", pattern="^(50|all)$"), acceptable: bool = False,
              q: str | None = Query(None, max_length=80), conf: str = Query("likely", pattern="^(all|likely|high)$"),
-             inverted: bool = False, cap: bool = False,
+             inverted: bool = False, cap: bool = False, appeal_min: int = Query(0, ge=0, le=10),
              limit: int = Query(100, ge=1, le=500)):
         now = datetime.now(timezone.utc)
         pool = pool_for(show, now)
@@ -452,6 +484,8 @@ def create_app(fetch: Callable[[], list[dict]] = pg_live, fetch_gone: Callable[[
         n_inverted = len({r["asin"] for r in pool if r["_inv"] and _keep(r, tier, acceptable, category, q, sub)})
         if inverted:
             pool = [r for r in pool if r["_inv"]]
+        if appeal_min:  # D42: only what the model judged appealing (unrated products drop out)
+            pool = [r for r in pool if r["_appeal"] and r["_appeal"]["score"] >= appeal_min]
         cats: dict[str, int] = {}
         for r in pool:  # category counts under every filter except the category itself (for the dropdown)
             if _keep(r, tier, acceptable, None, q, sub):
@@ -461,7 +495,7 @@ def create_app(fetch: Callable[[], list[dict]] = pg_live, fetch_gone: Callable[[
         # live confidence applies to live-checked units; a seen-only card instead says when the feed last showed it
         held = sum(r.get("source") is None and RANK[live_confidence(r, now)["label"]] < CONF_MIN[conf] for r in rows)
         rows = [r for r in rows if r.get("source") is not None or RANK[live_confidence(r, now)["label"]] >= CONF_MIN[conf]]
-        products = sorted(group_products(rows, now), key=SORTS[sort])
+        products = sorted(group_products(rows, now, bool(is_admin(request))), key=SORTS[sort])
         if sort == "best":
             # D39: a seen-only card whose reference looks off ranks as if it scored 25% less (the score shown is unchanged)
             products.sort(key=lambda p: -p["score"] * (FLAGGED_RANK if p["check_reference"] else 1))
@@ -472,10 +506,11 @@ def create_app(fetch: Callable[[], list[dict]] = pg_live, fetch_gone: Callable[[
                 "seen_only": sum(not p["verified"] for p in products),
                 "categories": [{"name": k, "units": v, "verified": k in VERIFIED_CATEGORIES}
                                for k, v in sorted(cats.items(), key=lambda kv: -kv[1])],
-                "score_version": SCORE_VERSION, "confidence_version": CONFIDENCE_VERSION, "attribution": ATTRIBUTION, "generated_at": now.isoformat()}
+                "score_version": SCORE_VERSION, "confidence_version": CONFIDENCE_VERSION, "delight_version": DELIGHT_VERSION,
+                "attribution": ATTRIBUTION, "generated_at": now.isoformat()}
 
     @app.get("/api/gone")
-    def gone(category: str | None = None, tier: str = Query("50", pattern="^(50|all)$"),
+    def gone(request: Request, category: str | None = None, tier: str = Query("50", pattern="^(50|all)$"),
              q: str | None = Query(None, max_length=80),
              hours: int = Query(72, ge=1, le=168),
              limit: int = Query(30, ge=1, le=500)):
@@ -485,10 +520,12 @@ def create_app(fetch: Callable[[], list[dict]] = pg_live, fetch_gone: Callable[[
         rows = [r for r in cached("gone", fetch_gone)
                 if _keep(r, tier, True, category, q) and _minutes(now, r["last_seen_at"]) <= hours * 60]
         rows.sort(key=score, reverse=True)
+        internal = bool(is_admin(request))
         items = [{"asin": r["asin"], "title": r["title"], "category": r["category"], "image": image_url(r["image"]),
                   "url": f"https://www.amazon.com/dp/{r['asin']}?aod=1", "condition": r["cond"],
                   "price": r["resale_cents"] / 100, "pct_off": round(r["strict"] * 100), "score": score(r),
-                  "score_parts": breakdown(r), "lifespan": gone_lifespan(r), "near_miss": r["strict"] < HEADLINE, "minutes_since_seen": _minutes(now, r["last_seen_at"])}
+                  "score_parts": breakdown(r), "lifespan": gone_lifespan(r), "near_miss": r["strict"] < HEADLINE, "minutes_since_seen": _minutes(now, r["last_seen_at"]),
+                  **({"rank": r.get("rank")} if internal else {})}  # D24: rank for admins only
                  for r in rows[:limit]]
         return {"gone": items, "count": len(rows), "score_version": SCORE_VERSION,
                 "attribution": ATTRIBUTION, "generated_at": now.isoformat()}

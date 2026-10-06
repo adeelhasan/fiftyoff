@@ -24,5 +24,7 @@ GRANT USAGE ON SEQUENCE curation_log_id_seq TO feed_reader;
 GRANT SELECT, INSERT, UPDATE ON app_user TO feed_reader;
 GRANT INSERT ON app_user_log TO feed_reader;
 GRANT USAGE ON SEQUENCE app_user_log_id_seq TO feed_reader;
+-- D42: the model's appeal judgements
+GRANT SELECT ON appeal TO feed_reader;
 SQL
 echo "feed_reader: SELECT on the feed, gone, status and admin views; INSERT/UPDATE on curation and app_user, INSERT on their logs"

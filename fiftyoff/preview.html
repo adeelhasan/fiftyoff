@@ -161,6 +161,7 @@ footer a { color: inherit }
       </label>
       <label for="sort">Sort
         <select id="sort">
+          <option value="delight">Delight (model, test)</option>
           <option value="best">Best deal</option>
           <option value="discount">Biggest discount</option>
           <option value="newest">Newest deals</option>
@@ -204,14 +205,19 @@ const sized = (u, px) => u ? u.replace(/\.(jpg|png|gif)$/, `._SL${px}_.$1`) : ""
 const img = (u, px, alt) => u ? `<img src="${esc(sized(u, px))}" alt="${esc(alt)}" loading="lazy" referrerpolicy="no-referrer">` : "";
 
 const COND = { "1": "Like New", "0.92": "Very Good", "0.75": "Good", "0.55": "Acceptable" };
-function scoreBox(score, s, c) {
+// Sales rank: sent to admins only (D24), for the card's shown ASIN (the best unit, not the whole parent)
+// D42: the model's appeal judgement (ours: from the title, brand and category) and the delight it gives
+const appealLine = (a, d) => a ? `<p>Appeal <b>${a.score}/10</b>: ${esc(a.why || "")}${a.tags?.length ? ` · ${esc(a.tags.join(", "))}` : ""}<br>Delight <b>${d}</b> = appeal × % off × condition</p>`
+  : `<p>Appeal: not rated yet</p>`;
+const rankLine = (rank) => rank === undefined ? "" : `<p>Sales rank: <b>${rank == null ? "none" : "#" + rank.toLocaleString()}</b> (this listing)</p>`;
+function scoreBox(score, s, c, rank, p) {
   const row = (k, w) => `<tr><td>${k} <span class="w">${w}</span></td><td>${s[k.toLowerCase().replace("$ saved", "savings")].toFixed(1)}</td></tr>`;
   return `<span class="scorebox"><button class="score" type="button" aria-label="Deal score ${score}, show breakdown">Score <b>${score}</b></button>
     <span class="tip" role="tooltip"><table>
       ${row("Discount", "40%")}${row("Demand", "25%")}${row("$ saved", "25%")}${row("Rating", "10%")}
       <tr class="total"><td>Score <span class="w">× ${COND[String(s.condition_factor)] || "condition"} ${s.condition_factor}</span></td><td>${score}</td></tr>
     </table><p>Points per part, already scaled by condition. Demand = reviews, sales pace, Amazon sells it.</p>
-    ${c ? `<p>Still available: <b>${c.label}</b> (${c.p})${c.hot ? " · hot deal, decays fast" : ""}</p>` : ""}</span></span>`;
+    ${p ? appealLine(p.appeal, p.delight) : ""}${rankLine(rank)}${c ? `<p>Still available: <b>${c.label}</b> (${c.p})${c.hot ? " · hot deal, decays fast" : ""}</p>` : ""}</span></span>`;
 }
 
 const REASONS = { above_list: "above list price", vs_refurb: "far above refurbished", thin: "thin price history",
@@ -237,7 +243,7 @@ function card(p) {
     p.units.map((u) => `<li><span>${esc(short(u.condition))}</span><span>${u.pct_off}% · ${usd(u.price)}</span></li>`).join("")}</ul></details>` : "";
   return `<li class="card${p.verified ? "" : " unverified"}">
     <div class="pic"><a href="${esc(p.url)}" rel="noopener" target="_blank" tabindex="-1" aria-hidden="true">${img(p.image, 400, "")}</a>
-      ${scoreBox(p.score, p.score_parts, c)}
+      ${scoreBox(p.score, p.score_parts, c, p.rank, p)}
       ${sinceLook(p) ? `<span class="flag look" title="Priced ${ago(p.minutes_since_priced)}, after your last look">New since last look</span>`
         : p.verified && c.label === "LOW" ? `<span class="flag maybe">May be gone</span>`
         : !p.verified ? `<span class="flag explore" title="Seen in Keepa's deal feed; we don't live-check it">Seen in feed</span>`
@@ -287,6 +293,7 @@ async function load() {
   if (freshOnly) q.set("fresh", "true");
   q.set("show", show);
   if (invOnly) q.set("inverted", "true");
+  if (appealOnly) q.set("appeal_min", "7");
   if ($("cap").checked) q.set("cap", "true");
   if (sub) q.set("sub", sub);
   $("subbar").hidden = !sub;
@@ -335,10 +342,12 @@ const KEYWORDS = ["Rug", "Speaker", "Headphones", "TV", "Monitor", "Laptop", "iP
   "Vacuum", "Coffee", "Espresso", "Blender", "Grill", "Drill", "Saw", "Faucet", "Chair", "Bike", "Cooler"];
 let counts = [], newCount = 0, freshOnly = new URLSearchParams(location.search).get("fresh") === "1";
 let invOnly = new URLSearchParams(location.search).get("inv") === "1", invCount = 0;
+let appealOnly = new URLSearchParams(location.search).get("appeal") === "1";  // D42: the model's 7+ only
 const hits = (k) => counts.filter((t) => new RegExp(`(^|[^a-z0-9])${k.toLowerCase()}`).test(t)).length;
 function renderChips() {
   const cur = $("q").value.trim().toLowerCase();
   $("chips").innerHTML = `<button type="button" data-k="__new" aria-pressed="${freshOnly}">New in 24 h<span>${newCount}</span></button>` +
+    `<button type="button" data-k="__appeal" aria-pressed="${appealOnly}" title="Only products the model rated 7+ for appeal">Appealing 7+</button>` +
     `<button type="button" data-k="__inv" aria-pressed="${invOnly}" title="Third-party-only New price above Amazon's list price: check these">Inverted<span>${invCount}</span></button>` + KEYWORDS.map((k) => [k, hits(k)]).filter(([k, n]) => n || k.toLowerCase() === cur)
     .map(([k, n]) => `<button type="button" data-k="${k}" aria-pressed="${k.toLowerCase() === cur}">${k}<span>${n}</span></button>`).join("");
 }
@@ -347,6 +356,7 @@ $("chips").addEventListener("click", (e) => {
   if (!b) return;
   if (b.dataset.k === "__new") { freshOnly = !freshOnly; syncUrl(); load(); return; }
   if (b.dataset.k === "__inv") { invOnly = !invOnly; syncUrl(); load(); return; }
+  if (b.dataset.k === "__appeal") { appealOnly = !appealOnly; syncUrl(); load(); return; }
   $("q").value = b.getAttribute("aria-pressed") === "true" ? "" : b.dataset.k;
   syncUrl(); load(); loadGone();
 });
@@ -367,6 +377,7 @@ function syncUrl() {
   show !== "all" ? u.searchParams.set("show", show) : u.searchParams.delete("show");
   sub ? u.searchParams.set("sub", sub) : u.searchParams.delete("sub");
   invOnly ? u.searchParams.set("inv", "1") : u.searchParams.delete("inv");
+  appealOnly ? u.searchParams.set("appeal", "1") : u.searchParams.delete("appeal");
   $("cap").checked ? u.searchParams.set("cap", "1") : u.searchParams.delete("cap");
   history.replaceState(null, "", u);
 }

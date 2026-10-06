@@ -24,8 +24,9 @@ from .keepa import (AMAZON, CONDITIONS, DEAL_PAGE_COST, DEAL_PAGE_SIZE, DOMAIN_U
                     KeepaError, decode_csv, keepa_to_unix, unix_to_keepa)
 
 CHECK_FORMULA_VERSION = "d0.2"  # strict ref at a check: min of Amazon/New now, 1-day, 30-day, 90-day avg
-QUALIFY_VERSION = "q0.3"      # what sweep_rows.qualifies means: q0.1 tiers + rank 50k; q0.2 D38 census rules;
+QUALIFY_VERSION = "q0.4"      # what sweep_rows.qualifies means: q0.1 tiers + rank 50k; q0.2 D38 census rules;
                               # q0.3 D40: watched = tiers + rank and >= watch_min_strict, or the deep band (drops30)
+                              # q0.4 D41: as q0.3 with max_rank from config (0 = no rank limit for live checks)
 UNIT_ALGO_VERSION = "u0.2"      # unit states + lifespan bounds + confidence, below (u0.2: Keepa-bracketed starts)
 
 TARGET_CATS = [172282, 1055398, 2619525011, 228013, 3375251]  # Electronics, H&K, Appliances, Tools, Sports
@@ -38,6 +39,7 @@ CENSUS_CATS = [165793011, 3760911, 3760901, 1064954, 165796011, 2619533011, 2972
 # D38: per-category census rules. Toys sit on a long rank tail (big toys rank well past 50k), so the 50k
 # limit hid nearly all of them; worn clothing has little appeal, so clothing qualifies only Like New.
 CENSUS_MAX_RANK = {165793011: 300000}
+CENSUS_DEFAULT_RANK = 50000  # D41: the census keeps its own rank rule when the tracker's max_rank is lifted
 CENSUS_CONDS = {7141123011: ("Used - Like New",)}
 # D39: subcategory names. Feed rows carry leaf node ids (`categories`); checks bring `categoryTree` for free,
 # the rest are named by Keepa's category lookup (parents included), a few ids per call.
@@ -74,7 +76,7 @@ class TrackerConfig:
     sweep_min_delta: int = 30            # Keepa nominal floor; our strict tiers decide
     sweep_min_resale_cents: int = 2000
     tiers: list[tuple[float, int]] = field(default_factory=lambda: [(0.40, 10000), (0.30, 20000)])
-    max_rank: int = 50000
+    max_rank: int = 50000                # 0 = no rank limit for live checks (D41)
     check_estimate: int = 7              # observed for 6,605 of 7,020 D17 checks; 13 is the 2-page worst case
     fast_minutes: int = 15
     fast_window_minutes: int = 120      # D40: the 15-min cadence covers a new 50%+ deal's first 2 h, then hourly to 6 h
@@ -107,7 +109,8 @@ def qualifies(strict: float | None, ref_cents: int | None, rank: int | None, cfg
               max_rank: int | None = None) -> bool:
     if strict is None or ref_cents is None:
         return False
-    if rank is not None and rank > (max_rank or cfg.max_rank):
+    limit = cfg.max_rank if max_rank is None else max_rank
+    if limit and rank is not None and rank > limit:  # 0 = no rank limit (D41)
         return False
     return any(strict >= d and ref_cents >= r for d, r in cfg.tiers)
 
@@ -460,7 +463,7 @@ class Tracker:
             return None
         cur = d.get("current") or []
         rank = cur[3] if len(cur) > 3 and cur[3] > 0 else None
-        ok = (qualifies(r.strict, r.strict_ref_cents, rank, self.cfg, CENSUS_MAX_RANK.get(cat))
+        ok = (qualifies(r.strict, r.strict_ref_cents, rank, self.cfg, CENSUS_MAX_RANK.get(cat, CENSUS_DEFAULT_RANK))
               and (cat not in CENSUS_CONDS or r.condition in CENSUS_CONDS[cat]))  # D38
         return {"asin": r.asin, "parent": r.parent, "cat": r.root_cat, "title": r.title,
                 "resale": r.warehouse_cents, "ref": r.strict_ref_cents, "strict": r.strict,

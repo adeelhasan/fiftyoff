@@ -112,6 +112,13 @@ CREATE TABLE IF NOT EXISTS app_user_log (
   by text NOT NULL, at timestamptz NOT NULL
 );
 
+-- D42: the model's appeal judgement, one row per product key (parent ASIN, else ASIN) and model. Ours, not Keepa's:
+-- derived from the title, brand and category. `prompt_v` is the rubric version (fiftyoff/appeal_rubric.md).
+CREATE TABLE IF NOT EXISTS appeal (
+  key text NOT NULL, model text NOT NULL, score smallint NOT NULL, tags text[], why text,
+  prompt_v text NOT NULL, rated_at timestamptz NOT NULL, PRIMARY KEY (key, model)
+);
+
 -- The one listing predicate (mirrors fiftyoff/curation.py `listed`): an ASIN is out of every feed view when
 -- hidden, or held by the rules without an approval whose reference is still within 20% (REVIEW_REOPEN;
 -- keep in sync). No baseline (decided_ref_cents NULL) fails closed.

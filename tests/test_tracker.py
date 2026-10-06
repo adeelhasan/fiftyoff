@@ -536,3 +536,14 @@ def test_fresh_headline_past_fast_window_outranks_routine_rechecks(rig):
     tr.watch["OLD"].last_check -= 5 * HOUR                  # make OLD far more overdue (8x)
     assert tr.interval(tr.watch["WARM"], clock.t) == 60 * 60
     assert tr.next_check(clock.t) == "WARM"
+
+
+def test_max_rank_zero_lifts_the_rank_limit():
+    """D41: max_rank = 0 live-checks at any rank; the census keeps its own limit."""
+    from fiftyoff.tracker import TrackerConfig, qualifies
+    cfg = TrackerConfig()
+    assert not qualifies(0.55, 20000, 400000, cfg) and qualifies(0.55, 20000, 40000, cfg)
+    cfg.max_rank = 0
+    assert qualifies(0.55, 20000, 400000, cfg) and qualifies(0.55, 20000, None, cfg)
+    assert not qualifies(0.55, 20000, 400000, cfg, 50000)   # an explicit limit (the census) still applies
+    assert not qualifies(0.35, 15000, 1000, cfg)             # the tiers still apply

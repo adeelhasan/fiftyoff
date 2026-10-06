@@ -52,7 +52,7 @@ def plan_lines(c: TrackerConfig) -> list[str]:
     return [
         f"TRACKER — sweep every {c.sweep_minutes} min (~1-3 pages); deep sweep every {c.full_sweep_hours} h in "
         f"{len(DEEP_SLICES)} slices under Keepa's 10k cap, one page per {c.deep_minutes:g} min (~160 pages × 5 tokens)",
-        f"  qualifies: {tiers}; sales rank ≤{c.max_rank:,}; 5 target categories",
+        f"  qualifies: {tiers}; {f'sales rank ≤{c.max_rank:,}' if c.max_rank else 'any sales rank'}; 5 target categories",
         f"  live checks (~{c.check_estimate} tokens): every {c.fast_minutes} min for new 50%+ deals (<6 h), "
         f"{c.new_near_miss_minutes} min for new near misses, {c.unconfirmed_minutes} min while a unit is unconfirmed, "
         f"else {c.slow_minutes} min; failed checks retried after {c.retry_minutes} min",
