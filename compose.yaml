@@ -6,6 +6,7 @@
 #   docker compose run --rm app tracker.py unlock          # approve a tracker run ([y/N], token cap, expiry)
 #   docker compose --profile tracker up -d tracker         # start the long-running tracker
 #   docker compose up -d api                               # read-only feed API + preview on 127.0.0.1:8000
+#   docker compose up -d notifier                         # new-deal emails to watchers (notify.py)
 #   docker compose up -d tunnel                            # https://preview.fiftyoff.app (named Cloudflare tunnel)
 #   docker compose --profile preview up -d preview-tunnel  # old temporary *.trycloudflare.com URL (retired)
 # `app` and `tracker` sit in profiles, so a plain `up` never starts them. The tracker spends nothing
@@ -81,6 +82,23 @@ services:
       - ./preflight.toml:/app/preflight.toml:ro   # [admin] tags
     ports:
       - "127.0.0.1:8000:8000"   # localhost only; reach it over an SSH tunnel or a Cloudflare Tunnel
+    depends_on:
+      db:
+        condition: service_healthy
+
+  # Notifications v1 (exploratory): decides new-deal events and emails watchers (notify.py, fiftyoff/notify.py).
+  # Without SMTP_HOST in .env it only logs what it would send. No Keepa calls, no model.
+  notifier:
+    image: fiftyoff:latest
+    command: ["notify.py", "run"]
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: postgresql://fiftyoff:${POSTGRES_PASSWORD:-fiftyoff-dev}@db:5432/fiftyoff
+    volumes:
+      - ./preflight.toml:/app/preflight.toml:ro
     depends_on:
       db:
         condition: service_healthy

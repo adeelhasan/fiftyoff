@@ -254,7 +254,7 @@ class Store(Protocol):
     def load(self) -> tuple[dict[str, Watch], dict[tuple[str, int], Unit], dict]: ...
     def put_state(self, key: str, value) -> None: ...
     def save_watch(self, w: Watch) -> None: ...
-    def save_unit(self, u: Unit) -> None: ...
+    def save_unit(self, u: Unit, event: str | None = None) -> None: ...  # event: "new" | "revived" (notifications)
     def add_sweep_rows(self, t: float, rows: list[dict]) -> None: ...
     def add_check(self, t: float, check: dict, offers: list[dict]) -> None: ...
     def add_census_rows(self, t: float, cat_id: int, rows: list[dict]) -> None: ...
@@ -279,6 +279,7 @@ class MemoryStore:
         self.census: list[dict] = []
         self.reviews: dict[str, dict] = {}
         self.cat_nodes: dict[int, tuple[str | None, int | None]] = {}
+        self.events: list[tuple[str, str, int, float]] = []  # (kind, asin, offer_id, at)
 
     def known_cats(self):
         return set(self.cat_nodes)
@@ -299,8 +300,10 @@ class MemoryStore:
     def save_watch(self, w):
         self.watch[w.asin] = w
 
-    def save_unit(self, u):
+    def save_unit(self, u, event=None):
         self.units[(u.asin, u.offer_id)] = u
+        if event:
+            self.events.append((event, u.asin, u.offer_id, u.last_seen))
 
     def add_sweep_rows(self, t, rows):
         self.sweep_rows += [{"t": t, **r} for r in rows]
@@ -673,7 +676,9 @@ class Tracker:
         present = {o["offer_id"]: o for o in offers}
         for oid, o in present.items():
             u = self.units.get((asin, oid))
+            event = None  # notifications: the tracker records what happened; the notifier decides who hears of it
             if u is None:
+                event = "new"
                 after, kfirst = prev_check, None
                 if after is None and looks:  # first check: bracket the start with Keepa's own offer looks
                     kfirst = keepa_to_unix(o["keepa_first"])
@@ -685,13 +690,14 @@ class Tracker:
                 self.units[(asin, oid)] = u
             else:
                 if u.state == "gone":
+                    event = "revived"
                     u.revivals += 1
                     u.gone_at = None
                     self.log(f"  {asin}/{oid} revived after {(t - u.last_seen) / HOUR:.1f} h")
                 u.state, u.absent_since = "live", None
                 u.last_seen, u.last_price, u.strict_last, u.ref_last = t, o["price"], o["strict"], ref
                 u.checks_seen += 1
-            self.store.save_unit(u)
+            self.store.save_unit(u, event)
         for (a, oid), u in self.units.items():
             if a != asin or oid in present or u.state == "gone":
                 continue

@@ -21,6 +21,7 @@ import tomllib
 import os
 import re
 import secrets
+import statistics
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -34,11 +35,13 @@ from . import access, curation
 from .analysis import review_reasons
 from .confidence import CONFIDENCE_VERSION, RANK, live_confidence
 from .score import SCORE_VERSION, breakdown, image_url, score
+from .shelving import UNSORTED, resolve_shelf
 from .tracker import CENSUS_CATS, Unit, lifespan
 
 ATTRIBUTION = {"text": "Data by Keepa", "url": "https://keepa.com"}
 PREVIEW = Path(__file__).parent / "preview.html"
 GONE_PAGE = Path(__file__).parent / "gone.html"
+SHELVES_PAGE = Path(__file__).parent / "shelves.html"
 STATUS_PAGE = Path(__file__).parent / "status.html"
 ADMIN_PAGE = Path(__file__).parent / "admin.html"
 CONFIG = Path(__file__).parent.parent / "preflight.toml"
@@ -46,14 +49,29 @@ NEW_HOURS = 24             # a deal is "new" when Keepa saw its current price se
 HEADLINE = 0.50            # D22: the default view is strict 50%+; below it is a labelled "near miss"
 ACCEPTABLE = "Used - Acceptable"
 APPEAL_MODEL = "sonnet"    # D42: whose appeal judgement the feed uses (appeal.model)
+ROLES = ("front", "aisle", "hidden")  # D46: where a shelf shows: home view, inside its aisle, only with "everything"
+PRICE_HOLD_X = 50          # D46: a reference this many times its shelf's median is held (a seller's placeholder price)
+JUNK_APPEAL = 2            # D45: the simplified view hides products the model rated this or lower
 UNRATED_APPEAL = 4         # D42: a product the model hasn't rated yet sorts as "meh", not as junk or as a find
-DELIGHT_VERSION = "l0.1"   # delight = appeal/10 x % off x condition factor, 0-100
+DELIGHT_VERSION = "l0.2"   # delight = appeal/10 x % off x condition factor x freshness, 0-130
+FRESH_BOOST = 1.3          # l0.2: a deal Keepa priced within NEW_HOURS counts this much more...
+FRESH_FADE_HOURS = 72      # ...fading linearly to x1 by this age, so the shelves change between visits
+
+
+def freshness(minutes: int | None) -> float:
+    """l0.2: x1.3 while Keepa priced the deal in the last 24 h, linearly down to x1 at 3 days; unknown = x1."""
+    if minutes is None or minutes >= FRESH_FADE_HOURS * 60:
+        return 1.0
+    if minutes <= NEW_HOURS * 60:
+        return FRESH_BOOST
+    return 1 + (FRESH_BOOST - 1) * (FRESH_FADE_HOURS * 60 - minutes) / ((FRESH_FADE_HOURS - NEW_HOURS) * 60)
 
 
 def delight(p: dict) -> float:
-    """D42: what the visitor should see first: a thing people want (appeal), really half off, in good shape."""
+    """D42: what the visitor should see first: a thing people want (appeal), really half off, in good shape;
+    l0.2: and new since the last visit (freshness)."""
     a = p["appeal"]["score"] if p.get("appeal") else UNRATED_APPEAL
-    return round(a * p["pct_off"] / 10 * p["score_parts"]["condition_factor"], 1)
+    return round(a * p["pct_off"] / 10 * p["score_parts"]["condition_factor"] * freshness(p.get("minutes_since_priced")), 1)
 
 
 SORTS = {
@@ -88,8 +106,32 @@ def pg_appeal() -> list[dict]:
     import psycopg
     from psycopg.rows import dict_row
     with psycopg.connect(os.environ["FEED_DATABASE_URL"], row_factory=dict_row) as conn:
-        return conn.execute("SELECT key, score, tags, why, model, prompt_v FROM appeal WHERE model = %s",
+        return conn.execute("SELECT key, score, tags, why, model, prompt_v, aisle, kind, fit, shelf, size FROM appeal WHERE model = %s",
                             (APPEAL_MODEL,)).fetchall()
+
+
+def pg_kind_map() -> list[dict]:
+    """D45: the rater's kind -> our shelf and aisle."""
+    return _query("kind_map")
+
+
+def pg_shelves() -> list[dict]:
+    """D46: shelves v0.1 with their roles."""
+    return _query("shelf")
+
+
+def pg_watchers() -> list[dict]:
+    """Notifications v1: how many subscribers watch each shelf (admins only for now)."""
+    return _query("shelf_watchers")
+
+
+def pg_set_shelf_role(shelf_id: str, role: str, by: str) -> dict | None:
+    """D46: the user's role for a shelf (overrides the model's proposal)."""
+    import psycopg
+    from psycopg.rows import dict_row
+    with psycopg.connect(os.environ["FEED_DATABASE_URL"], row_factory=dict_row) as conn:
+        return conn.execute("UPDATE shelf SET role = %s, updated_by = %s, updated_at = now() WHERE id = %s "
+                            "RETURNING id, role, proposed_role", (role, by, shelf_id)).fetchone()
 
 
 def pg_nodes() -> list[dict]:
@@ -349,6 +391,10 @@ def create_app(fetch: Callable[[], list[dict]] = pg_live, fetch_gone: Callable[[
                fetch_status: Callable[[], dict] = pg_status, fetch_seen: Callable[[], list[dict]] = pg_seen,
                fetch_nodes: Callable[[], list[dict]] = pg_nodes,
                fetch_appeal: Callable[[], list[dict]] = pg_appeal,
+               fetch_kind_map: Callable[[], list[dict]] = pg_kind_map,
+               fetch_shelves: Callable[[], list[dict]] = pg_shelves,
+               fetch_watchers: Callable[[], list[dict]] = pg_watchers,
+               set_shelf_role: Callable[[str, str, str], dict | None] = pg_set_shelf_role,
                fetch_review: Callable[[], list[dict]] = pg_review,
                fetch_curated: Callable[[], list[dict]] = pg_curated,
                curate: Callable[[str, dict, tuple, str], dict] = pg_curate,
@@ -447,19 +493,23 @@ def create_app(fetch: Callable[[], list[dict]] = pg_live, fetch_gone: Callable[[
     def health():
         return {"ok": True}
 
-    def pool_for(show: str, now: datetime) -> list[dict]:
-        """Live-checked rows and/or seen-only rows (D39), each tagged with its subcategory (`_sub`)."""
+    def pool_for(show: str, now: datetime, wide: bool = False) -> list[dict]:
+        """Live-checked rows and/or seen-only rows (D39), each tagged with its subcategory (`_sub`).
+        `wide` (D46, the shelves page): also seen-only 50%+ deals from a $40 reference; otherwise only the tiers."""
         live = cached("live", fetch) if show != "seen" else []
         seen = []
         if show != "live":
             liveset = {r["asin"] for r in cached("live", fetch)}
             seen = [r for r in cached("seen", fetch_seen) if r["asin"] not in liveset
-                    and _minutes(now, r["last_confirmed_at"]) <= SEEN_HOURS[show] * 60]
+                    and _minutes(now, r["last_confirmed_at"]) <= SEEN_HOURS[show] * 60
+                    and (wide or r.get("in_tiers", True))]
         nodes = {}
         if any(r.get("cats") and not r.get("cat_path") for r in seen):
             nodes = {n["id"]: (n["name"], n["parent_id"]) for n in cached("nodes", fetch_nodes)}
         try:
-            appeal = {a["key"]: {"score": a["score"], "tags": a["tags"] or [], "why": a["why"]}
+            appeal = {a["key"]: {"score": a["score"], "tags": a["tags"] or [], "why": a["why"],
+                                 "aisle": a.get("aisle"), "kind": a.get("kind"), "fit": a.get("fit"),
+                                 "shelf": a.get("shelf"), "size": a.get("size")}
                       for a in cached("appeal", fetch_appeal)}
         except Exception:  # noqa: BLE001 — the judgement is an extra; the feed works without it
             appeal = {}
@@ -508,6 +558,96 @@ def create_app(fetch: Callable[[], list[dict]] = pg_live, fetch_gone: Callable[[
                                for k, v in sorted(cats.items(), key=lambda kv: -kv[1])],
                 "score_version": SCORE_VERSION, "confidence_version": CONFIDENCE_VERSION, "delight_version": DELIGHT_VERSION,
                 "attribution": ATTRIBUTION, "generated_at": now.isoformat()}
+
+    @app.get("/api/shelves")
+    def shelves(request: Request, aisle: str | None = Query(None, max_length=40),
+                shelf: str | None = Query(None, max_length=80), q: str | None = Query(None, max_length=80),
+                nofit: bool = False, everything: bool = False, review: bool = False,
+                per: int = Query(12, ge=1, le=50)):
+        """D45/D46, the simplified view: headline deals (50%+ from a $40 reference, prime condition, likely still
+        there) on our shelves. The home view shows `front` shelves, an aisle `front` + `aisle` ones, `everything`
+        all of them plus what the model rated 2 or less. `nofit` hides size-dependent items. A reference over
+        PRICE_HOLD_X times its shelf's median is held. `review` (admins): every shelf, empty ones too, with the
+        model's proposed role. With `shelf` (an id), that one shelf in full."""
+        now = datetime.now(timezone.utc)
+        admin = bool(is_admin(request))
+        review = review and admin
+        meta, kmap = {}, {}
+        try:  # without the shelf tables everything lands on the "just in" shelf
+            meta = {x["id"]: x for x in cached("shelves", fetch_shelves)}
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            kmap = {k["kind"]: k["shelf"] for k in cached("kind_map", fetch_kind_map)}
+        except Exception:  # noqa: BLE001
+            pass
+
+        def place(a: dict | None) -> str:
+            return resolve_shelf(a, kmap, meta)
+
+        rows = [r for r in pool_for("all", now, wide=True) if _keep(r, "50", False, None, q)]
+        rows = [r for r in rows if r.get("source") is not None or RANK[live_confidence(r, now)["label"]] >= CONF_MIN["likely"]]
+        refs: dict[str, list[int]] = {}
+        for r in rows:
+            r["_shelf"] = place(r["_appeal"])
+            if r.get("ref_cents"):
+                refs.setdefault(r["_shelf"], []).append(r["ref_cents"])
+        med = {k: statistics.median(v) for k, v in refs.items() if len(v) >= 5}
+        held = [r for r in rows if r["_shelf"] in med and (r.get("ref_cents") or 0) > PRICE_HOLD_X * med[r["_shelf"]]]
+        held_ids = {id(r) for r in held}
+        rows = [r for r in rows if id(r) not in held_ids]
+
+        def role(sid: str) -> str:
+            return meta[sid]["role"] if sid in meta else "front"  # unrated arrivals show, last
+
+        shown = {"front", "aisle", "hidden"} if everything or review else {"front", "aisle"} if aisle else {"front"}
+        products, aisles = [], {}
+        for p in group_products(rows, now):
+            a = p["appeal"] or {}
+            if not (everything or review) and a and a["score"] <= JUNK_APPEAL:
+                continue
+            if nofit and a.get("fit"):
+                continue
+            sid = place(a)
+            # a size only means something on items that depend on fit (raters sometimes put a wattage there)
+            p["shelf"], p["size"] = sid, a.get("size") if a.get("fit") and a.get("size") not in (None, "", "-") else None
+            p["aisle"] = meta[sid]["aisle"] if sid in meta else (a.get("aisle") or "other")
+            if role(sid) in shown | {"aisle"}:  # an aisle chip counts what that aisle shows
+                c = aisles.setdefault(p["aisle"], [0, 0])
+                c[0] += 1
+                c[1] += a.get("score", 0) >= 7
+            if role(sid) in shown and (not aisle or p["aisle"] == aisle):
+                products.append(p)
+        by: dict[str, list[dict]] = {}
+        for p in sorted(products, key=lambda p: (-p["delight"], -p["score"])):
+            by.setdefault(p["shelf"], []).append(p)
+        if review:
+            for sid, x in meta.items():
+                if not aisle or x["aisle"] == aisle:
+                    by.setdefault(sid, [])
+        order = sorted(by, key=lambda k: (k == UNSORTED, -sum(p["delight"] for p in by[k][:3]) / 3))
+
+        watching = {}
+        if admin:
+            try:  # notifications v1: watcher counts, admins only until public counts are approved
+                watching = {w["shelf_id"]: w["watching"] for w in cached("watchers", fetch_watchers)}
+            except Exception:  # noqa: BLE001
+                pass
+
+        def entry(sid: str) -> dict:
+            x = meta.get(sid, {})
+            e = {"id": sid, "shelf": x.get("name", "just in"), "aisle": x.get("aisle") or (by[sid][0]["aisle"] if by[sid] else "other"),
+                 "role": role(sid), "count": len(by[sid]), "products": by[sid] if shelf else by[sid][:per]}
+            if admin:
+                e.update(proposed_role=x.get("proposed_role"), role_reason=x.get("role_reason"), watching=watching.get(sid, 0))
+            return e
+
+        out = [entry(k) for k in order if not shelf or k == shelf]
+        return {"aisles": [{"aisle": k, "count": v[0], "appealing": v[1]}
+                           for k, v in sorted(aisles.items(), key=lambda kv: (-kv[1][1], -kv[1][0]))],
+                "shelves": out, "count": len(products), "admin": admin,
+                **({"held_for_price": len(held)} if admin else {}),
+                "delight_version": DELIGHT_VERSION, "attribution": ATTRIBUTION, "generated_at": now.isoformat()}
 
     @app.get("/api/gone")
     def gone(request: Request, category: str | None = None, tier: str = Query("50", pattern="^(50|all)$"),
@@ -648,6 +788,17 @@ def create_app(fetch: Callable[[], list[dict]] = pg_live, fetch_gone: Callable[[
         cache.pop("users", None)  # role and deactivation apply on the next request
         return {"email": email, **out}
 
+    @app.post("/admin/api/shelf/{shelf_id}")
+    def admin_shelf_role(shelf_id: str, body: dict, request: Request):
+        """D46: {role: front | aisle | hidden} for a shelf; the user's choice overrides the model's proposal."""
+        if not re.fullmatch(r"[a-z0-9-]{1,80}", shelf_id) or body.get("role") not in ROLES:
+            return Response("bad shelf or role", status_code=400)
+        out = set_shelf_role(shelf_id, body["role"], is_admin(request))
+        if not out:
+            return Response("no such shelf", status_code=404)
+        cache.clear()
+        return out
+
     @app.post("/admin/api/curation/{asin}")
     def admin_curate(asin: str, body: dict, request: Request):
         """{visibility?, tags_add?, tags_remove?, note?}. Validation lives in curation.apply."""
@@ -674,6 +825,10 @@ def create_app(fetch: Callable[[], list[dict]] = pg_live, fetch_gone: Callable[[
     @app.get("/closed-preview/status", response_class=HTMLResponse)
     def status_page():
         return STATUS_PAGE.read_text()
+
+    @app.get("/closed-preview/shelves", response_class=HTMLResponse)
+    def shelves_page():
+        return SHELVES_PAGE.read_text()
 
     @app.get("/closed-preview/gone", response_class=HTMLResponse)
     def gone_page():

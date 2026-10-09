@@ -26,5 +26,12 @@ GRANT INSERT ON app_user_log TO feed_reader;
 GRANT USAGE ON SEQUENCE app_user_log_id_seq TO feed_reader;
 -- D42: the model's appeal judgements
 GRANT SELECT ON appeal TO feed_reader;
+-- D45: kinds -> shelves
+GRANT SELECT ON kind_map TO feed_reader;
+-- D46: shelves and their roles (the admin sets a role from the shelves page)
+GRANT SELECT ON shelf TO feed_reader;
+GRANT UPDATE (role, updated_by, updated_at) ON shelf TO feed_reader;
+-- Notifications v1: watcher counts per shelf (shown to admins)
+GRANT SELECT ON shelf_watchers TO feed_reader;
 SQL
 echo "feed_reader: SELECT on the feed, gone, status and admin views; INSERT/UPDATE on curation and app_user, INSERT on their logs"

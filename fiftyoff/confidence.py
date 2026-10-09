@@ -19,8 +19,10 @@ from __future__ import annotations
 import math
 from datetime import datetime
 
-CONFIDENCE_VERSION = "c0.2"  # c0.2: "hot" window 24 h -> 6 h, matching the tracker's fast lane (NEW_WINDOW)
-HOT_TAU_H, SETTLED_TAU_H, HOT_PRICED_H = 3.0, 24.0, 6.0
+CONFIDENCE_VERSION = "c0.3"  # c0.2: "hot" window 24 h -> 6 h, matching the tracker's fast lane (NEW_WINDOW)
+                             # c0.3 (D43): settled tau 24 h -> 48 h, as settled deals are re-checked daily
+                             # (LOW after ~33 h without a sighting instead of ~17 h; 9 of ~450 went overnight)
+HOT_TAU_H, SETTLED_TAU_H, HOT_PRICED_H = 3.0, 48.0, 6.0
 HEADLINE = 0.50
 UNCONFIRMED_FACTOR = 0.35
 HIGH, MEDIUM = 0.8, 0.5

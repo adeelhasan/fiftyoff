@@ -118,6 +118,24 @@ CREATE TABLE IF NOT EXISTS appeal (
   key text NOT NULL, model text NOT NULL, score smallint NOT NULL, tags text[], why text,
   prompt_v text NOT NULL, rated_at timestamptz NOT NULL, PRIMARY KEY (key, model)
 );
+-- D44 (rubric a0.2): our own shelves. aisle = one of a fixed list, kind = what it is ("robot vacuums"),
+-- fit = the buyer's size or fit decides whether it works (clothing, shoes, rings).
+ALTER TABLE appeal ADD COLUMN IF NOT EXISTS aisle text;
+ALTER TABLE appeal ADD COLUMN IF NOT EXISTS kind text;
+ALTER TABLE appeal ADD COLUMN IF NOT EXISTS fit bool;
+-- D45: our categorisation v0. Each rater's kind maps to a shelf (what a shopper browses as one row) in one aisle.
+CREATE TABLE IF NOT EXISTS kind_map (
+  kind text PRIMARY KEY, shelf text NOT NULL, aisle text NOT NULL, version text NOT NULL
+);
+-- D46: shelves v0.1 with permanent ids and a role: front (home view), aisle (inside its aisle), hidden (only with
+-- "show everything"). The model proposes the role; the user's choice (role) overrides it. kind_map.shelf = shelf.id.
+CREATE TABLE IF NOT EXISTS shelf (
+  id text PRIMARY KEY, name text NOT NULL, aisle text NOT NULL, role text NOT NULL, proposed_role text NOT NULL,
+  role_reason text, version text NOT NULL, updated_by text, updated_at timestamptz
+);
+-- D46 (rubric a0.3): the rater picks the shelf id, and states the size when the title gives one.
+ALTER TABLE appeal ADD COLUMN IF NOT EXISTS shelf text;
+ALTER TABLE appeal ADD COLUMN IF NOT EXISTS size text;
 
 -- The one listing predicate (mirrors fiftyoff/curation.py `listed`): an ASIN is out of every feed view when
 -- hidden, or held by the rules without an approval whose reference is still within 20% (REVIEW_REOPEN;
@@ -198,11 +216,14 @@ SELECT c.asin, NULL::bigint AS offer_id, c.title, c.category, c.image, c.cond, c
        NULL::text AS brand, NULL::text[] AS cat_path, NULL::int AS reviews, NULL::real AS rating,
        c.drops30, NULL::int AS monthly_sold, NULL::bool AS amazon_sells, c.rank,
        to_timestamp((c.creation_kmin + 21564000) * 60.0) AS priced_at, c.cat_id,
-       c.parent_asin, c.cats, c.ref_flags
+       c.parent_asin, c.cats, c.ref_flags,
+       ((c.strict >= 0.40 AND c.ref_cents >= 10000) OR (c.strict >= 0.30 AND c.ref_cents >= 20000)) AS in_tiers
 FROM c
 -- D39 (10-06): seeing has no rank limit here either (Clothing had 486 Like New 50%+ deals in a week, 22 within
 -- 50k). Tiers mirror TrackerConfig.tiers; the Clothing condition rule mirrors CENSUS_CONDS (D38).
-WHERE ((c.strict >= 0.40 AND c.ref_cents >= 10000) OR (c.strict >= 0.30 AND c.ref_cents >= 20000))
+-- D46: plus 50%+ from a $40 reference for the shelves page; the main feed keeps `in_tiers` rows only.
+WHERE ((c.strict >= 0.40 AND c.ref_cents >= 10000) OR (c.strict >= 0.30 AND c.ref_cents >= 20000)
+       OR (c.strict >= 0.50 AND c.ref_cents >= 4000))
   AND (c.cat_id <> 7141123011 OR c.cond = 'Used - Like New')
   AND NOT EXISTS (SELECT 1 FROM curation x WHERE x.asin = c.asin AND x.visibility = 'hidden');
 
@@ -216,9 +237,12 @@ SELECT s.asin, NULL::bigint AS offer_id, s.title, s.category, s.image, s.cond, s
        NULL::text AS brand, NULL::text[] AS cat_path, NULL::int AS reviews, NULL::real AS rating,
        s.drops30, NULL::int AS monthly_sold, NULL::bool AS amazon_sells, s.rank,
        to_timestamp((s.creation_kmin + 21564000) * 60.0) AS priced_at, NULL::bigint AS cat_id,
-       s.parent_asin, s.cats, s.ref_flags
+       s.parent_asin, s.cats, s.ref_flags,
+       ((s.strict >= 0.40 AND s.ref_cents >= 10000) OR (s.strict >= 0.30 AND s.ref_cents >= 20000)) AS in_tiers
 FROM s
-WHERE ((s.strict >= 0.40 AND s.ref_cents >= 10000) OR (s.strict >= 0.30 AND s.ref_cents >= 20000))
+-- D46: plus 50%+ from a $40 reference for the shelves page; the main feed keeps `in_tiers` rows only.
+WHERE ((s.strict >= 0.40 AND s.ref_cents >= 10000) OR (s.strict >= 0.30 AND s.ref_cents >= 20000)
+       OR (s.strict >= 0.50 AND s.ref_cents >= 4000))
   AND NOT EXISTS (SELECT 1 FROM curation x WHERE x.asin = s.asin AND x.visibility = 'hidden');
 
 -- Latest pass per category, one row per listing (ASIN + condition + price), summarised. ASIN-level counts.
@@ -290,6 +314,48 @@ SELECT c.asin, c.visibility, c.tags, c.note, c.decided_ref_cents, c.updated_at, 
        coalesce(r.title, w.title) AS title, coalesce(r.image, w.image) AS image, r.status AS review_status,
        r.reasons, r.ref_cents, r.resale_cents, r.strict, x.why AS unlisted_why, x.asin IS NULL AS listed
 FROM curation c LEFT JOIN review r USING (asin) LEFT JOIN watch w USING (asin) LEFT JOIN unlisted x USING (asin);
+-- Notifications v1 (exploratory, 2026-10-08; fiftyoff/notify.py). The tracker records unit events in the same
+-- transaction as the unit (outbox); the notifier decides who hears of them. Subscribers are added by CLI
+-- (notify.py) until registration exists. Tiers are config ([tiers.*] in preflight.toml), not schema.
+ALTER TABLE appeal ADD COLUMN IF NOT EXISTS rated_by text;  -- batch | local | api (rater backends)
+CREATE TABLE IF NOT EXISTS deal_event (
+  id bigserial PRIMARY KEY, at timestamptz NOT NULL, kind text NOT NULL, asin text NOT NULL, offer_id bigint NOT NULL,
+  status text NOT NULL DEFAULT 'new', why text, product_key text, shelf text, aisle text, score smallint,
+  rules_v text, decided_at timestamptz
+);
+CREATE INDEX IF NOT EXISTS deal_event_open ON deal_event (id) WHERE status IN ('new', 'waiting');
+CREATE TABLE IF NOT EXISTS subscriber (
+  id bigserial PRIMARY KEY, email text UNIQUE CHECK (email = lower(email)), tier text NOT NULL DEFAULT 'free',
+  paused bool NOT NULL DEFAULT false, note text, created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS endpoint (
+  id bigserial PRIMARY KEY, subscriber_id bigint NOT NULL REFERENCES subscriber(id) ON DELETE CASCADE,
+  kind text NOT NULL CHECK (kind IN ('email', 'webpush', 'apns', 'fcm')), address text NOT NULL, keys jsonb,
+  failures int NOT NULL DEFAULT 0, last_ok_at timestamptz, disabled_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now(), UNIQUE (kind, address)
+);
+CREATE TABLE IF NOT EXISTS interest (
+  subscriber_id bigint NOT NULL REFERENCES subscriber(id) ON DELETE CASCADE,
+  kind text NOT NULL CHECK (kind IN ('shelf', 'aisle', 'keyword', 'similar')), value text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY (subscriber_id, kind, value)
+);
+CREATE TABLE IF NOT EXISTS delivery (
+  id bigserial PRIMARY KEY, event_id bigint NOT NULL REFERENCES deal_event(id),
+  subscriber_id bigint NOT NULL REFERENCES subscriber(id) ON DELETE CASCADE,
+  endpoint_id bigint NOT NULL REFERENCES endpoint(id) ON DELETE CASCADE, product_key text NOT NULL,
+  deliver_at timestamptz NOT NULL, status text NOT NULL DEFAULT 'queued', sent_at timestamptz, error text,
+  UNIQUE (endpoint_id, event_id)
+);
+CREATE INDEX IF NOT EXISTS delivery_due ON delivery (deliver_at) WHERE status = 'queued';
+CREATE INDEX IF NOT EXISTS delivery_key ON delivery (subscriber_id, product_key);
+-- Watchers per shelf: a shelf interest, or an aisle interest (front and aisle shelves only); active subscribers only.
+CREATE OR REPLACE VIEW shelf_watchers AS
+SELECT s.id AS shelf_id, count(DISTINCT i.subscriber_id) AS watching
+FROM shelf s
+JOIN interest i ON (i.kind = 'shelf' AND i.value = s.id) OR (i.kind = 'aisle' AND i.value = s.aisle AND s.role <> 'hidden')
+JOIN subscriber sub ON sub.id = i.subscriber_id AND NOT sub.paused
+WHERE EXISTS (SELECT 1 FROM endpoint e WHERE e.subscriber_id = sub.id AND e.disabled_at IS NULL)
+GROUP BY s.id;
 """
 
 
@@ -344,7 +410,14 @@ class PgStore:
             (w.asin, w.parent, w.title, w.cat, w.rank, w.image, _ts(w.added), _ts(w.last_check or None),
              _ts(w.last_qualifying), _ts(w.retired), _ts(w.created), w.ok_checks))
 
-    def save_unit(self, u: Unit):
+    def save_unit(self, u: Unit, event: str | None = None):
+        with self.conn.transaction():  # the unit and its event land together or not at all (outbox)
+            self._save_unit(u)
+            if event:
+                self.conn.execute("INSERT INTO deal_event (at, kind, asin, offer_id) VALUES (%s, %s, %s, %s)",
+                                  (_ts(u.last_seen), event, u.asin, u.offer_id))
+
+    def _save_unit(self, u: Unit):
         self.conn.execute(
             "INSERT INTO units (asin, offer_id, state, first_seen_at, appeared_after_at, last_seen_at, absent_since_at, "
             "gone_at, first_price_cents, last_price_cents, cond, comment, strict_first, strict_last, ref_last_cents, "

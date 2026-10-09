@@ -58,6 +58,8 @@ def app(**kw):
     kw.setdefault("fetch_seen", lambda: [])
     kw.setdefault("fetch", rows)
     kw.setdefault("fetch_appeal", lambda: [])
+    kw.setdefault("fetch_kind_map", lambda: [])
+    kw.setdefault("fetch_shelves", lambda: [])
     return TestClient(create_app(fetch_gone=gone_rows, fetch_status=status_stub, password="", **kw))
 
 
@@ -353,8 +355,103 @@ def test_delight_ranks_appealing_products_first_and_appeal_min_filters():
     c = app(fetch_appeal=lambda: judged)
     r = c.get("/api/feed?tier=all&acceptable=true&sort=delight").json()
     top = r["products"][0]
-    assert (top.get("appeal") or {}).get("score") == 9 and r["delight_version"] == "l0.1"
+    assert (top.get("appeal") or {}).get("score") == 9 and r["delight_version"] == "l0.2"
     assert top["delight"] == round(9 * top["pct_off"] / 10 * top["score_parts"]["condition_factor"], 1)
     assert all(p["appeal"] is None for p in r["products"][1:])
     only = c.get("/api/feed?tier=all&acceptable=true&appeal_min=7").json()["products"]
     assert [p["appeal"]["score"] for p in only] == [9]
+
+
+SHELVES = [{"id": "luggage", "name": "luggage", "aisle": "travel", "role": "front", "proposed_role": "front",
+            "role_reason": "Fun to browse", "version": "s0.1"},
+           {"id": "pc-components", "name": "pc components", "aisle": "tech", "role": "aisle", "proposed_role": "aisle",
+            "role_reason": "Enthusiasts only", "version": "s0.1"},
+           {"id": "auto-parts", "name": "auto parts", "aisle": "auto", "role": "hidden", "proposed_role": "hidden",
+            "role_reason": "Parts", "version": "s0.1"}]
+
+
+def _judged(**over):
+    base = [{"key": "B0TEST0001", "score": 9, "tags": [], "why": "Coveted", "model": "sonnet", "prompt_v": "a0.3",
+             "aisle": "travel", "kind": "hardside luggage", "fit": False, "shelf": "luggage", "size": "-"},
+            {"key": "B0TEST0003", "score": 6, "tags": [], "why": "Enthusiast part", "model": "sonnet", "prompt_v": "a0.3",
+             "aisle": "tech", "kind": "pc fans", "fit": False, "shelf": None, "size": None}]
+    for k, v in over.items():
+        base[0][k] = v
+    return base
+
+
+def test_shelves_show_front_on_home_and_aisle_shelves_inside_their_aisle():
+    """D46: roles decide where a shelf shows; a0.3's shelf id wins, kind_map places older ratings."""
+    kmap = [{"kind": "pc fans", "shelf": "pc-components", "aisle": "tech", "version": "k0.2"}]
+    c = app(fetch_appeal=lambda: _judged(), fetch_kind_map=lambda: kmap, fetch_shelves=lambda: SHELVES)
+    home = c.get("/api/shelves").json()
+    assert [x["id"] for x in home["shelves"]] == ["luggage"] and home["shelves"][0]["shelf"] == "luggage"
+    assert {a["aisle"]: a["count"] for a in home["aisles"]} == {"travel": 1, "tech": 1}  # chips count the aisle view
+    tech = c.get("/api/shelves?aisle=tech").json()
+    assert [x["id"] for x in tech["shelves"]] == ["pc-components"]
+    assert "proposed_role" not in tech["shelves"][0] and "held_for_price" not in tech  # admin-only fields
+    one = c.get("/api/shelves?shelf=luggage").json()["shelves"]
+    assert len(one) == 1 and one[0]["products"][0]["appeal"]["why"] == "Coveted"
+
+
+def test_shelves_hide_junk_size_dependent_and_hidden_shelves_unless_everything():
+    c = app(fetch_appeal=lambda: _judged(shelf="auto-parts", score=1), fetch_shelves=lambda: SHELVES)
+    assert "auto-parts" not in [x["id"] for x in c.get("/api/shelves?aisle=auto").json()["shelves"]]
+    assert "auto-parts" in [x["id"] for x in c.get("/api/shelves?everything=true").json()["shelves"]]
+    c = app(fetch_appeal=lambda: _judged(fit=True, size="9.5"), fetch_shelves=lambda: SHELVES)
+    p = c.get("/api/shelves").json()["shelves"][0]["products"][0]
+    assert p["size"] == "9.5"
+    assert "luggage" not in [x["id"] for x in c.get("/api/shelves?nofit=true").json()["shelves"]]
+
+
+def test_shelves_hold_placeholder_reference_prices():
+    """D46: a reference over 50x its shelf's median (5+ products) is a seller's placeholder: held from the shelves."""
+    base = rows()[0]
+    many = [{**base, "asin": f"B0SHELF{i:03d}", "parent_asin": None, "ref_cents": 12000} for i in range(6)]
+    fake = {**base, "asin": "B0SHELF999", "parent_asin": None, "ref_cents": 12000 * 100}
+    judged = [{"key": r["asin"], "score": 8, "tags": [], "why": "x", "model": "sonnet", "prompt_v": "a0.3",
+               "aisle": "travel", "kind": "k", "fit": False, "shelf": "luggage", "size": None} for r in many + [fake]]
+    c = app(fetch=lambda: many + [fake], fetch_appeal=lambda: judged, fetch_shelves=lambda: SHELVES)
+    asins = [p["asin"] for p in c.get("/api/shelves?shelf=luggage").json()["shelves"][0]["products"]]
+    assert len(asins) == 6 and "B0SHELF999" not in asins
+
+
+def test_freshness_lifts_deals_keepa_priced_recently_and_fades_by_three_days():
+    """l0.2: x1.3 within 24 h of Keepa pricing the deal, linear to x1 at 3 days, so shelves change between visits."""
+    from fiftyoff.api import freshness
+    assert freshness(None) == freshness(72 * 60) == freshness(10 * 24 * 60) == 1.0
+    assert freshness(0) == freshness(24 * 60) == 1.3
+    assert abs(freshness(48 * 60) - 1.15) < 1e-9
+    now = datetime.now(timezone.utc)
+    old = {**rows()[0], "asin": "B0OLD00001", "parent_asin": None}
+    new = {**old, "asin": "B0NEW00001", "priced_at": now - timedelta(hours=2)}
+    judged = [{"key": r["asin"], "score": 8, "tags": [], "why": "x", "model": "sonnet", "prompt_v": "a0.3",
+               "aisle": "travel", "kind": "k", "fit": False, "shelf": "luggage", "size": None} for r in (old, new)]
+    c = app(fetch=lambda: [old, new], fetch_appeal=lambda: judged, fetch_shelves=lambda: SHELVES)
+    r = c.get("/api/shelves").json()
+    ps = r["shelves"][0]["products"]
+    assert [p["asin"] for p in ps] == ["B0NEW00001", "B0OLD00001"] and r["delight_version"] == "l0.2"
+    assert ps[0]["delight"] == round(ps[1]["delight"] * 1.3, 1)
+
+
+def test_feed_keeps_the_tiers_while_shelves_take_the_40_dollar_band():
+    """D46: seen-only rows outside the tiers (50%+ from a $40-99 reference) reach the shelves, never the main feed."""
+    cheap = {**rows()[0], "asin": "B0CHEAP001", "parent_asin": None, "ref_cents": 6000, "resale_cents": 2500,
+             "strict": 0.58, "source": "feed", "in_tiers": False}
+    c = app(fetch_seen=lambda: [cheap])
+    assert "B0CHEAP001" not in [p["asin"] for p in c.get("/api/feed?tier=all&acceptable=true").json()["products"]]
+    shelves = c.get("/api/shelves?everything=true").json()["shelves"]
+    assert "B0CHEAP001" in [p["asin"] for s in shelves for p in s["products"]]
+
+
+def test_shelf_roles_are_set_by_admins_only():
+    calls = []
+    c = admin_app(fetch_shelves=lambda: SHELVES, set_shelf_role=lambda i, r, by: calls.append((i, r, by)) or {"id": i, "role": r})
+    preview = basic("fiftyoff", "s3cret")
+    assert c.post("/admin/api/shelf/luggage", json={"role": "aisle"}, headers=preview).status_code == 401
+    assert c.post("/admin/api/shelf/luggage", json={"role": "sideways"}, headers=ADMIN).status_code == 400
+    assert c.post("/admin/api/shelf/luggage", json={"role": "aisle"}, headers=ADMIN).json()["role"] == "aisle"
+    assert calls == [("luggage", "aisle", "admin")]
+    d = c.get("/api/shelves?review=true", headers=ADMIN).json()
+    assert d["admin"] and {x["id"] for x in d["shelves"]} >= {"luggage", "pc-components", "auto-parts"}  # empty ones too
+    assert "held_for_price" in d and d["shelves"][0]["proposed_role"]

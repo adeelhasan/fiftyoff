@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<title>fiftyoff shelves</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>½</text></svg>">
+<style>
+/* D45, the simplified view: our own aisles across the top, then one shelf (row) per kind of thing, best deals first.
+   Same palette as the preview (site/public/index.html). */
+:root {
+  --bg: #fafaf7; --surface: #ffffff; --fg: #16161a; --muted: #6b6b76; --line: #e7e6e0; --img: #ffffff;
+  --accent: #e4572e; --accent-soft: #fdebe5; --good: #1f7a4d; --good-soft: #e3f3ea; --warn: #9a6a00; --warn-soft: #fbf1d9;
+  --font: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #111114; --surface: #18181c; --fg: #f2f2ee; --muted: #9a9aa6; --line: #2a2a31; --img: #f4f4f1;
+  --accent: #f0714b; --accent-soft: #3a211a; --good: #5cc48f; --good-soft: #15291f; --warn: #e3b450; --warn-soft: #33290f;
+  color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #111114; --surface: #18181c; --fg: #f2f2ee; --muted: #9a9aa6; --line: #2a2a31; --img: #f4f4f1;
+  --accent: #f0714b; --accent-soft: #3a211a; --good: #5cc48f; --good-soft: #15291f; --warn: #e3b450; --warn-soft: #33290f;
+  color-scheme: dark }
+* { box-sizing: border-box }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.5 var(--font); padding-inline: 16px; padding-block: 24px 40px }
+main { max-width: 1180px; margin: 0 auto; display: grid; grid-template-columns: minmax(0, 1fr); gap: 20px }
+main > * { min-width: 0 }
+header { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 10px }
+.mark { font-size: 30px; font-weight: 800; letter-spacing: -.03em; line-height: 1; margin: 0 }
+.mark span { color: var(--accent) }
+.mark a { color: inherit; text-decoration: none }
+.lede { color: var(--muted); margin: 6px 0 0; max-width: 60ch }
+.chip { font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px }
+.chip a { color: inherit }
+
+/* Aisles */
+.aisles { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 4px; scrollbar-width: thin }
+.aisles button { flex: none; font: inherit; font-size: 13.5px; color: var(--fg); background: var(--surface); border: 1px solid var(--line); border-radius: 999px; padding: 6px 12px; cursor: pointer; white-space: nowrap }
+.aisles button span { color: var(--muted); margin-left: 5px; font-variant-numeric: tabular-nums; font-size: 12px }
+.aisles button[aria-pressed="true"] { background: var(--fg); border-color: var(--fg); color: var(--bg) }
+.aisles button[aria-pressed="true"] span { color: var(--bg); opacity: .7 }
+
+.controls { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center }
+.controls label { font-size: 13px; color: var(--muted); display: flex; gap: 6px; align-items: center; cursor: pointer }
+input[type=search] { font: inherit; font-size: 14px; color: var(--fg); background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; width: 240px; min-width: 0 }
+input[type=checkbox] { accent-color: var(--accent); width: 16px; height: 16px; margin: 0 }
+:is(input, a, button):focus-visible { outline: 2px solid var(--accent); outline-offset: 2px }
+.count { margin-left: auto; font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums }
+
+/* Shelves */
+.shelf h2 { font-size: 17px; font-weight: 750; letter-spacing: -.01em; margin: 0 0 10px; display: flex; align-items: baseline; gap: 8px }
+.shelf h2 small { font-size: 13px; color: var(--muted); font-weight: 500 }
+.shelf h2 a { margin-left: auto; font-size: 13px; font-weight: 600; color: var(--accent); text-decoration: none; white-space: nowrap }
+.shelf h2 a:hover { text-decoration: underline }
+.row { display: grid; grid-auto-flow: column; grid-auto-columns: 176px; gap: 12px; overflow-x: auto; padding-bottom: 8px; scroll-snap-type: x proximity; list-style: none; margin: 0; padding-left: 0 }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(176px, 1fr)); gap: 14px; list-style: none; margin: 0; padding: 0 }
+.back { font: inherit; font-size: 13px; color: var(--accent); background: none; border: 0; padding: 0; cursor: pointer; font-weight: 600 }
+
+/* Cards */
+.card { scroll-snap-align: start; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; display: flex; flex-direction: column; min-width: 0 }
+.card.seen { border-style: dashed }
+.card a { color: inherit; text-decoration: none }
+.pic { aspect-ratio: 1 / 1; background: var(--img); position: relative }
+.pic img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; padding: 8px }
+.off { position: absolute; left: 8px; top: 8px; background: var(--accent); color: #fff; font-weight: 800; font-size: 12.5px; border-radius: 6px; padding: 1px 7px; font-variant-numeric: tabular-nums }
+.body { padding: 8px 10px 10px; display: grid; gap: 4px; align-content: start }
+.price { font-weight: 800; font-size: 16px; font-variant-numeric: tabular-nums }
+.t { font-size: 13px; font-weight: 600; line-height: 1.3; margin: 0; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden }
+.card a:hover .t { text-decoration: underline }
+.why { font-size: 12px; color: var(--muted); line-height: 1.3; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden }
+.cond { justify-self: start; font-size: 11px; font-weight: 600; border-radius: 4px; padding: 0 6px; background: var(--good-soft); color: var(--good) }
+.cond.good { background: var(--warn-soft); color: var(--warn) }
+.size { justify-self: start; font-size: 11.5px; font-weight: 700; color: var(--fg); border: 1px solid var(--line); border-radius: 4px; padding: 0 6px }
+/* Admin: shelf roles (D46) */
+.admin-only { display: none }
+body.admin .admin-only { display: flex }
+.roles { display: inline-flex; gap: 4px; align-items: center; font-size: 12px; font-weight: 500; color: var(--muted); flex-wrap: wrap }
+.roles button { font: inherit; font-size: 12px; color: var(--fg); background: var(--surface); border: 1px solid var(--line); border-radius: 999px; padding: 1px 9px; cursor: pointer }
+.roles button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff }
+.roles .prop { font-style: italic }
+.shelf.r-hidden h2, .shelf.r-aisle h2 { opacity: .85 }
+.empty, .error { padding: 28px 16px; text-align: center; color: var(--muted) }
+footer { font-size: 12px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 6px 16px; justify-content: space-between; border-top: 1px solid var(--line); padding-top: 14px }
+footer a { color: inherit }
+@media (max-width: 520px) {
+  .row { grid-auto-columns: 150px; gap: 10px }
+  .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px }
+  input[type=search] { width: 100% }
+  .count { margin-left: 0 }
+}
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div>
+      <h1 class="mark"><a href="?">fifty<span>off</span></a></h1>
+      <p class="lede">Things worth having, at half off or better. Amazon Resale units, measured against the lowest recent New price. Most are one of a kind.</p>
+    </div>
+    <span class="chip">Shelves (test) · <a href="/closed-preview">full feed</a></span>
+  </header>
+
+  <nav class="aisles" id="aisles" aria-label="Aisles"></nav>
+
+  <div class="controls">
+    <input type="search" id="q" placeholder="Search, e.g. robot vacuum" aria-label="Search">
+    <label><input type="checkbox" id="nofit"> Hide items that depend on size</label>
+    <label><input type="checkbox" id="everything"> Show everything</label>
+    <label class="admin-only"><input type="checkbox" id="review"> Review shelves (admin)</label>
+    <span class="admin-only" id="held" style="font-size:12.5px;color:var(--muted)"></span>
+    <span class="count" id="count"></span>
+  </div>
+
+  <section id="shelves" aria-live="polite"><p class="empty">Loading…</p></section>
+
+  <footer>
+    <span>Prices and availability change quickly; each card links to Amazon's offers page. Dashed cards were seen in Keepa's deal feed but not live-checked.</span>
+    <a href="https://keepa.com" rel="noopener" target="_blank">Data by Keepa</a>
+  </footer>
+</main>
+<script>
+const AISLES = { "tech": "Tech", "gaming": "Gaming", "audio-tv": "Audio & TV", "kitchen": "Kitchen",
+  "home-appliances": "Home appliances", "home-decor": "Home & decor", "diy": "DIY & fixtures", "outdoors": "Outdoors",
+  "fitness-sports": "Fitness & sports", "travel": "Travel", "fashion": "Fashion", "beauty-health": "Beauty & health",
+  "toys-kids": "Toys & kids", "pets": "Pets", "office-school": "Office & school", "auto": "Auto", "music": "Music", "other": "Other" };
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const usd = (n) => "$" + n.toLocaleString("en-US", { minimumFractionDigits: n % 1 ? 2 : 0, maximumFractionDigits: 2 });
+const sized = (u, px) => u ? u.replace(/\.(jpg|png|gif)$/, `._SL${px}_.$1`) : "";
+const cap = (s) => s ? s[0].toUpperCase() + s.slice(1) : s;
+const short = (c) => String(c || "").replace(/^Used - /, "");
+
+const url = new URL(location.href);
+let state = { aisle: url.searchParams.get("aisle") || "", shelf: url.searchParams.get("shelf") || "",
+  q: url.searchParams.get("q") || "", nofit: url.searchParams.get("nofit") === "1", everything: url.searchParams.get("all") === "1",
+  review: url.searchParams.get("review") === "1" };
+$("q").value = state.q; $("nofit").checked = state.nofit; $("everything").checked = state.everything; $("review").checked = state.review;
+
+function sync() {
+  const u = new URL(location.href);
+  for (const [k, v] of [["aisle", state.aisle], ["shelf", state.shelf], ["q", state.q]]) v ? u.searchParams.set(k, v) : u.searchParams.delete(k);
+  state.nofit ? u.searchParams.set("nofit", "1") : u.searchParams.delete("nofit");
+  state.everything ? u.searchParams.set("all", "1") : u.searchParams.delete("all");
+  state.review ? u.searchParams.set("review", "1") : u.searchParams.delete("review");
+  history.replaceState(null, "", u);
+}
+
+function card(p) {
+  const u0 = p.units[0], why = p.appeal?.why;
+  return `<li class="card${p.verified ? "" : " seen"}"><a href="${esc(p.url)}" rel="noopener" target="_blank">
+    <div class="pic">${p.image ? `<img src="${esc(sized(p.image, 320))}" alt="" loading="lazy" referrerpolicy="no-referrer">` : ""}
+      <span class="off">${p.pct_off}% off</span></div>
+    <div class="body"><span class="price">${usd(u0.price)}</span>
+      <p class="t">${esc(p.title)}</p>
+      ${why ? `<span class="why">${esc(why)}</span>` : ""}
+      ${p.size ? `<span class="size">Size ${esc(p.size)}</span>` : ""}
+      <span class="cond${/Good/.test(u0.condition) && !/Very/.test(u0.condition) ? " good" : ""}">${esc(short(u0.condition))}</span></div></a></li>`;
+}
+
+function renderAisles(aisles) {
+  $("aisles").innerHTML = `<button type="button" data-a="" aria-pressed="${!state.aisle}">All</button>` +
+    aisles.map((a) => `<button type="button" data-a="${esc(a.aisle)}" aria-pressed="${a.aisle === state.aisle}">${esc(AISLES[a.aisle] || a.aisle)}<span>${a.count}</span></button>`).join("");
+}
+
+const ROLE_NAMES = { front: "Front", aisle: "Aisle", hidden: "Hidden" };
+// D46, admins only: the shelf's role (front = home view, aisle = inside its aisle, hidden = only with "everything")
+const roles = (s) => !admin || s.id === "just-in" ? "" : `<span class="roles" data-id="${esc(s.id)}">${
+  Object.entries(ROLE_NAMES).map(([r, n]) => `<button type="button" data-role="${r}" aria-pressed="${s.role === r}">${n}</button>`).join("")}
+  <span class="prop" title="${esc(s.role_reason || "")}">model: ${esc(s.proposed_role || "?")}${s.role_reason ? ` — ${esc(s.role_reason)}` : ""}</span></span>`;
+let admin = false;
+
+function render(d) {
+  admin = d.admin; document.body.classList.toggle("admin", admin);
+  if (admin) $("held").textContent = d.held_for_price ? `${d.held_for_price} held for price check` : "";
+  renderAisles(d.aisles);
+  $("count").textContent = `${d.count.toLocaleString()} deals`;
+  if (!d.shelves.length) { $("shelves").innerHTML = `<p class="empty">Nothing here right now.</p>`; return; }
+  if (state.shelf) {
+    const s = d.shelves[0];
+    $("shelves").innerHTML = `<div class="shelf"><h2><button type="button" class="back" data-back>‹ All shelves</button></h2>
+      <h2>${esc(cap(s.shelf))} <small>${s.count} · ${esc(AISLES[s.aisle] || s.aisle)}${s.watching ? ` · ${s.watching} watching` : ""}</small></h2>${roles(s)}<ul class="grid">${s.products.map(card).join("")}</ul></div>`;
+    return;
+  }
+  $("shelves").innerHTML = d.shelves.map((s) => `<div class="shelf r-${esc(s.role)}"><h2>${esc(cap(s.shelf))} <small>${s.count}${s.watching ? ` · ${s.watching} watching` : ""}${admin && state.review ? ` · ${esc(AISLES[s.aisle] || s.aisle)}` : ""}</small>
+      ${s.count > s.products.length ? `<a href="?shelf=${encodeURIComponent(s.id)}" data-shelf="${esc(s.id)}">See all ${s.count} ›</a>` : ""}</h2>
+      ${roles(s)}${s.products.length ? `<ul class="row">${s.products.map(card).join("")}</ul>` : ""}</div>`).join("");
+}
+
+let seq = 0;
+async function load() {
+  const n = ++seq, q = new URLSearchParams();
+  if (state.aisle) q.set("aisle", state.aisle);
+  if (state.shelf) q.set("shelf", state.shelf);
+  if (state.q) q.set("q", state.q);
+  if (state.nofit) q.set("nofit", "true");
+  if (state.everything) q.set("everything", "true");
+  if (state.review) { q.set("review", "true"); q.set("per", "6"); }
+  try {
+    const r = await fetch(`/api/shelves?${q}`);
+    if (!r.ok) throw new Error(r.status);
+    const d = await r.json();
+    if (n === seq) render(d);
+  } catch (e) {
+    if (n === seq) $("shelves").innerHTML = `<p class="error">Couldn't load deals (${esc(e.message)}).</p>`;
+  }
+}
+
+$("aisles").addEventListener("click", (e) => {
+  const b = e.target.closest("button[data-a]");
+  if (!b) return;
+  state.aisle = b.dataset.a; state.shelf = ""; sync(); load(); scrollTo({ top: 0 });
+});
+$("shelves").addEventListener("click", (e) => {
+  const a = e.target.closest("[data-shelf]"), back = e.target.closest("[data-back]");
+  if (a) { e.preventDefault(); state.shelf = a.dataset.shelf; sync(); load(); scrollTo({ top: 0 }); }
+  if (back) { state.shelf = ""; sync(); load(); }
+  const rb = e.target.closest(".roles button[data-role]");
+  if (rb) setRole(rb.closest(".roles").dataset.id, rb.dataset.role, rb);
+});
+async function setRole(id, role, btn) {
+  btn.disabled = true;
+  try {
+    const r = await fetch(`/admin/api/shelf/${encodeURIComponent(id)}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ role }) });
+    if (!r.ok) throw new Error(r.status);
+    btn.closest(".roles").querySelectorAll("button[data-role]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.role === role)));
+  } catch (e) { console.log("[fiftyoff] role change failed", e.message); }
+  btn.disabled = false;
+}
+let t;
+$("q").addEventListener("input", () => { clearTimeout(t); t = setTimeout(() => { state.q = $("q").value.trim(); state.shelf = ""; sync(); load(); }, 250); });
+$("nofit").addEventListener("change", () => { state.nofit = $("nofit").checked; sync(); load(); });
+$("everything").addEventListener("change", () => { state.everything = $("everything").checked; sync(); load(); });
+$("review").addEventListener("change", () => { state.review = $("review").checked; state.shelf = ""; sync(); load(); });
+load();
+</script>
+</body>
+</html>
