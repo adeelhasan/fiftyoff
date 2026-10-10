@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Callable, Protocol
 
-from . import analysis
+from . import analysis, arbitrage
 from .keepa import (AMAZON, CONDITIONS, DEAL_PAGE_COST, DEAL_PAGE_SIZE, DOMAIN_US, EXTRA_INFO_UPDATES, NEW, Keepa,
                     KeepaError, decode_csv, keepa_to_unix, unix_to_keepa)
 
@@ -622,6 +622,7 @@ class Tracker:
         best = max((o["strict"] for o in offers if o["strict"] is not None), default=None)
         cheapest = min((o["price"] for o in offers), default=None)
         flags = analysis.ref_flags(windows, ref, cheapest, longer)
+        flags.update(arbitrage.other_used(p))  # flip estimate input (ARB_VERSION); not a reference flag
         self.store.add_check(t, {"asin": asin, "offers_ok": ok, "ref": ref, "ref_parts": parts, "best": best,
                                  "tokens": tokens, "formula": CHECK_FORMULA_VERSION,
                                  "ref_flags": flags}, offers)

@@ -31,7 +31,7 @@ from fastapi import FastAPI, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from starlette.concurrency import run_in_threadpool
 
-from . import access, curation
+from . import access, arbitrage, curation
 from .analysis import review_reasons
 from .confidence import CONFIDENCE_VERSION, RANK, live_confidence
 from .score import SCORE_VERSION, breakdown, image_url, score
@@ -53,18 +53,18 @@ ROLES = ("front", "aisle", "hidden")  # D46: where a shelf shows: home view, ins
 PRICE_HOLD_X = 50          # D46: a reference this many times its shelf's median is held (a seller's placeholder price)
 JUNK_APPEAL = 2            # D45: the simplified view hides products the model rated this or lower
 UNRATED_APPEAL = 4         # D42: a product the model hasn't rated yet sorts as "meh", not as junk or as a find
-DELIGHT_VERSION = "l0.2"   # delight = appeal/10 x % off x condition factor x freshness, 0-130
-FRESH_BOOST = 1.3          # l0.2: a deal Keepa priced within NEW_HOURS counts this much more...
+DELIGHT_VERSION = "l0.3"   # delight = appeal/10 x % off x condition factor x freshness, 0-160
+FRESH_BOOST = 1.6          # l0.3 (l0.2: 1.3): a deal Keepa priced within NEW_HOURS counts this much more...
 FRESH_FADE_HOURS = 72      # ...fading linearly to x1 by this age, so the shelves change between visits
 
 
-def freshness(minutes: int | None) -> float:
-    """l0.2: x1.3 while Keepa priced the deal in the last 24 h, linearly down to x1 at 3 days; unknown = x1."""
+def freshness(minutes: int | None, boost: float = FRESH_BOOST) -> float:
+    """l0.3: x1.6 while Keepa priced the deal in the last 24 h, linearly down to x1 at 3 days; unknown = x1."""
     if minutes is None or minutes >= FRESH_FADE_HOURS * 60:
         return 1.0
     if minutes <= NEW_HOURS * 60:
-        return FRESH_BOOST
-    return 1 + (FRESH_BOOST - 1) * (FRESH_FADE_HOURS * 60 - minutes) / ((FRESH_FADE_HOURS - NEW_HOURS) * 60)
+        return boost
+    return 1 + (boost - 1) * (FRESH_FADE_HOURS * 60 - minutes) / ((FRESH_FADE_HOURS - NEW_HOURS) * 60)
 
 
 def delight(p: dict) -> float:
@@ -74,6 +74,7 @@ def delight(p: dict) -> float:
     return round(a * p["pct_off"] / 10 * p["score_parts"]["condition_factor"] * freshness(p.get("minutes_since_priced")), 1)
 
 
+FLIP_RANK = 50_000  # demand cut for the flip sort: the tracker's own popularity limit
 SORTS = {
     "delight": lambda p: (-p["delight"], -p["score"]),
     "best": lambda p: -p["score"],
@@ -81,6 +82,10 @@ SORTS = {
     "newest": lambda p: (p["minutes_since_priced"] is None, p["minutes_since_priced"] or 0),
     "confirmed": lambda p: p["minutes_since_confirmed"],
     "price": lambda p: p["price"],
+    # admins: best flip first; a doubtful reference (flagged, inverted) or a never-checked unit goes after the rest,
+    # and within each, products without demand (no rank, or past FLIP_RANK) after those that sell
+    "flip": lambda p: (p.get("arb") is None, bool(p["check_reference"] or p["inverted"] or not p["verified"]),
+                       not (p.get("rank") and p["rank"] <= FLIP_RANK), -(p["arb"]["best"] if p.get("arb") else 0)),
 }
 
 
@@ -330,7 +335,7 @@ def _keep(r: dict, tier: str, acceptable: bool, category: str | None, q: str | N
 def group_products(rows: list[dict], now: datetime, internal: bool = False) -> list[dict]:
     """One card per parent product (D39: sizes and colours together), live-checked and seen-only kept apart.
     Units best-first; `variants` counts the ASINs under the card (rule 9: ASIN and parent counts stay separate).
-    `internal` (admins only, D24): also the shown ASIN's sales rank."""
+    `internal` (admins only, D24): also the shown ASIN's sales rank and the flip estimate (arbitrage.py)."""
     by: dict[tuple, list[dict]] = {}
     for r in rows:
         by.setdefault((r.get("parent_asin") or r["asin"], r.get("source") is None), []).append(r)
@@ -360,7 +365,10 @@ def group_products(rows: list[dict], now: datetime, internal: bool = False) -> l
             "verified": not seen_only, "source": best.get("source") or "live",
             "units": units,
             "appeal": best.get("_appeal"),
-            **({"rank": best.get("rank")} if internal else {}),
+            **({"rank": best.get("rank"), "monthly_sold": best.get("monthly_sold"),
+                "arb": arbitrage.estimate(best["resale_cents"], best.get("ref_cents"),
+                                          (best.get("ref_flags") or {}).get("used_3p"), best.get("resale_live"))}
+               if internal else {}),
         })
         out[-1]["delight"] = delight(out[-1])
     return out
@@ -518,7 +526,7 @@ def create_app(fetch: Callable[[], list[dict]] = pg_live, fetch_gone: Callable[[
 
     @app.get("/api/feed")
     def feed(request: Request, category: str | None = None,
-             sort: str = Query("best", pattern="^(delight|best|discount|newest|confirmed|price)$"), fresh: bool = False,
+             sort: str = Query("best", pattern="^(delight|best|discount|newest|confirmed|price|flip)$"), fresh: bool = False,
              show: str = Query("all", pattern="^(all|live|seen)$"), sub: str | None = Query(None, max_length=120),
              tier: str = Query("50", pattern="^(50|all)$"), acceptable: bool = False,
              q: str | None = Query(None, max_length=80), conf: str = Query("likely", pattern="^(all|likely|high)$"),

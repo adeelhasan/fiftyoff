@@ -317,6 +317,15 @@ def test_rank_reaches_admins_only():
     assert c.get("/api/feed?tier=all&acceptable=true", headers=ADMIN).json()["products"][0]["rank"] is not None
 
 
+def test_flip_estimate_reaches_admins_only_and_sorts():
+    """The flip estimate (arbitrage.py) is internal: admins get it on feed cards and can sort by it."""
+    c = admin_app()
+    assert all("arb" not in p for p in c.get("/api/feed?tier=all&acceptable=true", headers=basic("fiftyoff", "s3cret")).json()["products"])
+    ps = c.get("/api/feed?tier=all&acceptable=true&sort=flip", headers=ADMIN).json()["products"]
+    assert ps and all(p["arb"]["v"] == "x0.1" for p in ps)
+    assert [p["arb"]["best"] for p in ps] == sorted((p["arb"]["best"] for p in ps), reverse=True)
+
+
 def test_admin_is_closed_without_an_admin_password():
     c = TestClient(create_app(fetch_seen=lambda: [], fetch=rows, fetch_gone=gone_rows, fetch_review=lambda: [], password="", admin_password=""))
     assert c.get("/api/feed").status_code == 200
@@ -355,7 +364,7 @@ def test_delight_ranks_appealing_products_first_and_appeal_min_filters():
     c = app(fetch_appeal=lambda: judged)
     r = c.get("/api/feed?tier=all&acceptable=true&sort=delight").json()
     top = r["products"][0]
-    assert (top.get("appeal") or {}).get("score") == 9 and r["delight_version"] == "l0.2"
+    assert (top.get("appeal") or {}).get("score") == 9 and r["delight_version"] == "l0.3"
     assert top["delight"] == round(9 * top["pct_off"] / 10 * top["score_parts"]["condition_factor"], 1)
     assert all(p["appeal"] is None for p in r["products"][1:])
     only = c.get("/api/feed?tier=all&acceptable=true&appeal_min=7").json()["products"]
@@ -417,11 +426,11 @@ def test_shelves_hold_placeholder_reference_prices():
 
 
 def test_freshness_lifts_deals_keepa_priced_recently_and_fades_by_three_days():
-    """l0.2: x1.3 within 24 h of Keepa pricing the deal, linear to x1 at 3 days, so shelves change between visits."""
+    """l0.3: x1.6 within 24 h of Keepa pricing the deal, linear to x1 at 3 days, so shelves change between visits."""
     from fiftyoff.api import freshness
     assert freshness(None) == freshness(72 * 60) == freshness(10 * 24 * 60) == 1.0
-    assert freshness(0) == freshness(24 * 60) == 1.3
-    assert abs(freshness(48 * 60) - 1.15) < 1e-9
+    assert freshness(0) == freshness(24 * 60) == 1.6
+    assert abs(freshness(48 * 60) - 1.3) < 1e-9
     now = datetime.now(timezone.utc)
     old = {**rows()[0], "asin": "B0OLD00001", "parent_asin": None}
     new = {**old, "asin": "B0NEW00001", "priced_at": now - timedelta(hours=2)}
@@ -430,8 +439,8 @@ def test_freshness_lifts_deals_keepa_priced_recently_and_fades_by_three_days():
     c = app(fetch=lambda: [old, new], fetch_appeal=lambda: judged, fetch_shelves=lambda: SHELVES)
     r = c.get("/api/shelves").json()
     ps = r["shelves"][0]["products"]
-    assert [p["asin"] for p in ps] == ["B0NEW00001", "B0OLD00001"] and r["delight_version"] == "l0.2"
-    assert ps[0]["delight"] == round(ps[1]["delight"] * 1.3, 1)
+    assert [p["asin"] for p in ps] == ["B0NEW00001", "B0OLD00001"] and r["delight_version"] == "l0.3"
+    assert ps[0]["delight"] == round(ps[1]["delight"] * 1.6, 1)
 
 
 def test_feed_keeps_the_tiers_while_shelves_take_the_40_dollar_band():

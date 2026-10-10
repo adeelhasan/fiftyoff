@@ -11,17 +11,17 @@
    Palette and wordmark follow site/public/index.html (the fiftyoff.app landing page). */
 :root {
   --bg: #fafaf7; --surface: #ffffff; --fg: #16161a; --muted: #6b6b76; --line: #e7e6e0; --img: #ffffff;
-  --accent: #e4572e; --accent-soft: #fdebe5; --warn: #9a6a00; --warn-soft: #fbf1d9;
+  --accent: #e4572e; --accent-soft: #fdebe5; --warn: #9a6a00; --warn-soft: #fbf1d9; --ok: #1a7f37;
   --good: #1f7a4d; --good-soft: #e3f3ea; --gone: #8a8a94;
   --font: system-ui, -apple-system, "Segoe UI", sans-serif;
 }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
   --bg: #111114; --surface: #18181c; --fg: #f2f2ee; --muted: #9a9aa6; --line: #2a2a31; --img: #f4f4f1;
-  --accent: #f0714b; --accent-soft: #3a211a; --warn: #e3b450; --warn-soft: #33290f;
+  --accent: #f0714b; --accent-soft: #3a211a; --warn: #e3b450; --warn-soft: #33290f; --ok: #57c27a;
   --good: #5cc48f; --good-soft: #15291f; --gone: #77777f; color-scheme: dark } }
 :root[data-theme="dark"] {
   --bg: #111114; --surface: #18181c; --fg: #f2f2ee; --muted: #9a9aa6; --line: #2a2a31; --img: #f4f4f1;
-  --accent: #f0714b; --accent-soft: #3a211a; --warn: #e3b450; --warn-soft: #33290f;
+  --accent: #f0714b; --accent-soft: #3a211a; --warn: #e3b450; --warn-soft: #33290f; --ok: #57c27a;
   --good: #5cc48f; --good-soft: #15291f; --gone: #77777f; color-scheme: dark }
 * { box-sizing: border-box }
 body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.5 var(--font); padding-inline: 16px; padding-block: 24px 40px }
@@ -95,6 +95,8 @@ input[type=checkbox] { accent-color: var(--accent); width: 16px; height: 16px; m
 .seg button[aria-pressed="true"] { background: var(--fg); color: var(--bg) }
 .sub { font: inherit; font-size: 12px; color: var(--muted); background: none; border: 0; padding: 0; cursor: pointer; text-align: left; text-decoration: underline dotted; text-underline-offset: 3px }
 .sub:hover { color: var(--fg) }
+.flip { font-size: 12px; margin: 6px 0 0; color: var(--muted) }
+.flip b.pos { color: var(--ok) } .flip b.neg { color: var(--warn) }
 .refwarn { font-size: 11.5px; color: var(--warn); background: var(--warn-soft); border-radius: 4px; padding: 1px 6px }
 .active-sub { display: inline-flex; gap: 6px; align-items: center; font-size: 12.5px; background: var(--fg); color: var(--bg); border-radius: 999px; padding: 3px 4px 3px 10px }
 .active-sub button { font: inherit; background: none; border: 0; color: inherit; cursor: pointer; padding: 0 6px }
@@ -167,6 +169,7 @@ footer a { color: inherit }
           <option value="newest">Newest deals</option>
           <option value="confirmed">Recently confirmed</option>
           <option value="price">Lowest price</option>
+          <option value="flip" hidden disabled id="sort-flip">Flip margin (admin)</option>
         </select>
       </label>
       <label for="conf">Show
@@ -209,6 +212,17 @@ const COND = { "1": "Like New", "0.92": "Very Good", "0.75": "Good", "0.55": "Ac
 // D42: the model's appeal judgement (ours: from the title, brand and category) and the delight it gives
 const appealLine = (a, d) => a ? `<p>Appeal <b>${a.score}/10</b>: ${esc(a.why || "")}${a.tags?.length ? ` · ${esc(a.tags.join(", "))}` : ""}<br>Delight <b>${d}</b> = appeal × % off × condition</p>`
   : `<p>Appeal: not rated yet</p>`;
+// Flip estimate (admins only, arbitrage.py): guessed exit price and net per channel. Tunable guesses, not data.
+const FLIPWARN = { used_cheaper: "used sells for less elsewhere", capped_by_used: "capped by other used offers",
+  more_resale: "another Resale unit stays" };
+const money = (n) => `<b class="${n > 0 ? "pos" : "neg"}">${n < 0 ? "−" : ""}$${Math.abs(n)}</b>`;
+function flipLine(a, sold) {
+  if (!a) return "";
+  const why = [a.sole ? "sole Resale unit" : "", ...a.warn.map((w) => FLIPWARN[w] || w)].filter(Boolean);
+  return `<p class="flip" title="Exit at ${usd(a.exit)} (${a.v}): 75% of New, capped $1 under other used offers${a.used_3p != null ? ` (from ${usd(a.used_3p)})` : ""}; net after fees and 8% purchase tax">
+    Flip ~${usd(a.exit)} → eBay ${money(a.net.ebay)} · local ${money(a.net.local)} · Amazon ${money(a.net.amazon)}
+    ${sold != null ? ` · ${sold}/mo sold` : ""}${why.length ? ` · ${esc(why.join(", "))}` : ""}</p>`;
+}
 const rankLine = (rank) => rank === undefined ? "" : `<p>Sales rank: <b>${rank == null ? "none" : "#" + rank.toLocaleString()}</b> (this listing)</p>`;
 function scoreBox(score, s, c, rank, p) {
   const row = (k, w) => `<tr><td>${k} <span class="w">${w}</span></td><td>${s[k.toLowerCase().replace("$ saved", "savings")].toFixed(1)}</td></tr>`;
@@ -259,6 +273,7 @@ function card(p) {
         <span class="seen ${p.verified ? c.label : ""}" title="${p.verified ? `Availability confidence ${c.label} (${c.p})${c.hot ? ", hot deal: decays fast" : ""}` : "Disappearing from the feed doesn't mean sold"}">${seen}</span>
         ${p.inverted ? `<span class="refwarn" title="Only third-party sellers set the New price, above Amazon's list price">Inverted: list ${usd(p.inverted.list)} → ${p.inverted.pct_off_vs_list}% off vs list</span>` : ""}
         ${p.check_reference.length ? `<span class="refwarn" title="Our % off may be overstated">Check reference: ${p.check_reference.map((r) => REASONS[r] || r).join(", ")}</span>` : ""}</div>
+      ${flipLine(p.arb, p.monthly_sold)}
       ${more}
     </div>
   </li>`;
@@ -308,6 +323,7 @@ async function load() {
     const d = await r.json();
     if (!q.has("q") && !freshOnly) { counts = d.products.map((p) => p.title.toLowerCase()); newCount = d.products.filter((p) => p.is_new).length; }
     invCount = d.inverted_count;
+    if (d.products.some((p) => "arb" in p)) $("sort-flip").hidden = $("sort-flip").disabled = false;  // admins get the flip estimate
     renderChips();
     renderCats(d.categories);
     $("deals").innerHTML = d.products.length ? d.products.map(card).join("")

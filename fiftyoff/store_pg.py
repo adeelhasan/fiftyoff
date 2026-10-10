@@ -173,7 +173,8 @@ SELECT u.asin, u.offer_id, w.title, w.category, w.image, u.cond, u.last_price_ce
        w.created_at AS priced_at,  -- Keepa's creationDate: when the deal's current Resale price was set
        w.parent_asin,  -- D39: cards group variants by parent
        (SELECT k.ref_flags FROM checks k WHERE k.asin = u.asin AND k.offers_ok
-        ORDER BY k.checked_at DESC LIMIT 1) AS ref_flags  -- 10-06: list price for the inversion test
+        ORDER BY k.checked_at DESC LIMIT 1) AS ref_flags,  -- 10-06: list price for the inversion test
+       (SELECT count(*) FROM units v WHERE v.asin = u.asin AND v.state <> 'gone') AS resale_live  -- flip estimate
 FROM units u JOIN watch w USING (asin) LEFT JOIN product p USING (asin)
 WHERE u.state <> 'gone' AND w.retired_at IS NULL AND ((u.strict_last >= 0.40 AND u.ref_last_cents >= 10000) OR (u.strict_last >= 0.30 AND u.ref_last_cents >= 20000))
   AND NOT EXISTS (SELECT 1 FROM unlisted x WHERE x.asin = u.asin);  -- D36
