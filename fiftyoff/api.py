@@ -30,8 +30,9 @@ from typing import Callable
 from fastapi import FastAPI, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from starlette.concurrency import run_in_threadpool
+from starlette.routing import Host
 
-from . import access, arbitrage, curation
+from . import access, api_v1, arbitrage, curation
 from .analysis import review_reasons
 from .confidence import CONFIDENCE_VERSION, RANK, live_confidence
 from .score import SCORE_VERSION, breakdown, image_url, score
@@ -139,6 +140,19 @@ def pg_set_shelf_role(shelf_id: str, role: str, by: str) -> dict | None:
                             "RETURNING id, role, proposed_role", (role, by, shelf_id)).fetchone()
 
 
+def pg_arrivals() -> list[dict]:
+    """api-v1 per_week: product keys that newly qualified in the last 7 days."""
+    return _query("arrival_7d")
+
+
+def pg_log_click(row: dict) -> None:
+    """api-v1: one /d/ hit."""
+    import psycopg
+    with psycopg.connect(os.environ["FEED_DATABASE_URL"]) as conn:
+        conn.execute("INSERT INTO click (asin, slug, surface, live, referer_path) "
+                     "VALUES (%(asin)s, %(slug)s, %(surface)s, %(live)s, %(referer_path)s)", row)
+
+
 def pg_nodes() -> list[dict]:
     return _query("cat_node")
 
@@ -239,6 +253,8 @@ def admin_tags(path: Path = CONFIG) -> tuple[str, ...]:
 
 
 CACHE_SECONDS = 30  # however much traffic arrives, the database sees at most one query per view per 30 s
+ARRIVALS_SECONDS = 3600  # api-v1 per_week moves slowly
+SITE_DIR = "/srv/web"  # the static export (web/out), bind-mounted into the api container
 
 
 def _minutes(now: datetime, t: datetime) -> int:
@@ -332,13 +348,19 @@ def _keep(r: dict, tier: str, acceptable: bool, category: str | None, q: str | N
             and matches(r["title"], q))
 
 
-def group_products(rows: list[dict], now: datetime, internal: bool = False) -> list[dict]:
+def card_key(r: dict) -> tuple:
+    """The card a row belongs to: its parent product, live-checked and seen-only kept apart (D39)."""
+    return r.get("parent_asin") or r["asin"], r.get("source") is None
+
+
+def group_products(rows: list[dict], now: datetime, internal: bool = False, keep_rows: bool = False) -> list[dict]:
     """One card per parent product (D39: sizes and colours together), live-checked and seen-only kept apart.
     Units best-first; `variants` counts the ASINs under the card (rule 9: ASIN and parent counts stay separate).
-    `internal` (admins only, D24): also the shown ASIN's sales rank and the flip estimate (arbitrage.py)."""
+    `internal` (admins only, D24): also the shown ASIN's sales rank and the flip estimate (arbitrage.py).
+    `keep_rows`: the card's rows under `_rows`, for callers that build their own payload (never emitted)."""
     by: dict[tuple, list[dict]] = {}
     for r in rows:
-        by.setdefault((r.get("parent_asin") or r["asin"], r.get("source") is None), []).append(r)
+        by.setdefault(card_key(r), []).append(r)
     out = []
     for _, us in by.items():
         us.sort(key=score, reverse=True)
@@ -371,7 +393,13 @@ def group_products(rows: list[dict], now: datetime, internal: bool = False) -> l
                if internal else {}),
         })
         out[-1]["delight"] = delight(out[-1])
+        if keep_rows:
+            out[-1]["_rows"] = us
     return out
+
+
+def shelf_role(meta: dict, sid: str) -> str:
+    return meta[sid]["role"] if sid in meta else "front"  # unrated arrivals show, last
 
 
 def _ts(d: datetime | None) -> float | None:
@@ -409,6 +437,10 @@ def create_app(fetch: Callable[[], list[dict]] = pg_live, fetch_gone: Callable[[
                fetch_users: Callable[[], list[dict]] = pg_users,
                touch_user: Callable[[str, bool], None] = pg_touch_user,
                set_user: Callable[[str, dict, bool, str], dict] = pg_set_user,
+               fetch_arrivals: Callable[[], list[dict]] = pg_arrivals,
+               log_click: Callable[[dict], None] = pg_log_click,
+               site_hosts: str | None = None, site_open: bool | None = None, site_dir: str | Path | None = None,
+               snapshot_thread: bool = True,
                password: str | None = None, user: str = "fiftyoff",
                admin_password: str | None = None, tags: tuple[str, ...] | None = None,
                verifier: access.AccessVerifier | None | bool = True, admin_emails: str | None = None) -> FastAPI:
@@ -419,7 +451,12 @@ def create_app(fetch: Callable[[], list[dict]] = pg_live, fetch_gone: Callable[[
     D37: with CF_ACCESS_TEAM + CF_ACCESS_AUD set (`verifier`; True = from env), a request carrying a valid
     Cloudflare Access token is let in as that person: viewers see the preview, admins (app_user role, or
     ADMIN_EMAILS owners) also see /admin/, and deactivated people see nothing. Requests without a valid token
-    fall back to the passwords above, until they're removed from .env at cutover."""
+    fall back to the passwords above, until they're removed from .env at cutover.
+
+    api-v1: requests for `site_hosts` (default: SITE_HOSTS env, comma-separated) go to the site app (api_v1.py:
+    /api/v1, /d/, the static export in `site_dir`). `site_open` (default: SITE_OPEN env) drops the preview password
+    for those hosts and lets the edge cache /api/v1; both flip together. The v1 snapshot thread starts with the app
+    (`snapshot_thread`) when there is a site host."""
     app = FastAPI(title="fiftyoff", docs_url=None, redoc_url=None)
     password = password if password is not None else os.environ.get("PREVIEW_PASSWORD") or None
     admin_password = admin_password if admin_password is not None else os.environ.get("ADMIN_PASSWORD") or None
@@ -430,6 +467,9 @@ def create_app(fetch: Callable[[], list[dict]] = pg_live, fetch_gone: Callable[[
     verifier = default_verifier() if verifier is True else verifier or None
     owner_emails = access.owners(admin_emails if admin_emails is not None else os.environ.get("ADMIN_EMAILS"))
     touched: dict[str, float] = {}
+    hosts = [h.strip().lower() for h in (site_hosts if site_hosts is not None else os.environ.get("SITE_HOSTS", "")).split(",")
+             if h.strip()]
+    site_open = site_open if site_open is not None else os.environ.get("SITE_OPEN", "").lower() in ("1", "true", "yes")
 
     def person(email: str) -> dict | None:
         return next((u for u in cached("users", fetch_users) if u["email"] == email), None)
@@ -482,16 +522,17 @@ def create_app(fetch: Callable[[], list[dict]] = pg_live, fetch_gone: Callable[[
         elif admin_path:
             if not is_admin(request):
                 return login("fiftyoff admin")
-        elif expected and path != "/api/health" and not is_admin(request) \
+        elif expected and path != "/api/health" and not (site_open and request.url.hostname in hosts) \
+                and not is_admin(request) \
                 and not secrets.compare_digest(request.headers.get("authorization", ""), expected):
             return login("fiftyoff preview")
         resp = await call_next(request)
         resp.headers["X-Robots-Tag"] = "noindex, nofollow"
         return resp
 
-    def cached(key: str, fn: Callable[[], list[dict]]) -> list[dict]:
+    def cached(key: str, fn: Callable[[], list[dict]], ttl: float = CACHE_SECONDS) -> list[dict]:
         hit = cache.get(key)
-        if hit and time.monotonic() - hit[0] < CACHE_SECONDS:
+        if hit and time.monotonic() - hit[0] < ttl:
             return hit[1]
         rows = fn()
         cache[key] = (time.monotonic(), rows)
@@ -500,6 +541,16 @@ def create_app(fetch: Callable[[], list[dict]] = pg_live, fetch_gone: Callable[[
     @app.get("/api/health")
     def health():
         return {"ok": True}
+
+    def appeal_map() -> dict[str, dict]:
+        """D42: the model's judgement per product key (parent ASIN, else ASIN)."""
+        try:
+            return {a["key"]: {"score": a["score"], "tags": a["tags"] or [], "why": a["why"],
+                               "aisle": a.get("aisle"), "kind": a.get("kind"), "fit": a.get("fit"),
+                               "shelf": a.get("shelf"), "size": a.get("size")}
+                    for a in cached("appeal", fetch_appeal)}
+        except Exception:  # noqa: BLE001 — the judgement is an extra; the feed works without it
+            return {}
 
     def pool_for(show: str, now: datetime, wide: bool = False) -> list[dict]:
         """Live-checked rows and/or seen-only rows (D39), each tagged with its subcategory (`_sub`).
@@ -514,13 +565,7 @@ def create_app(fetch: Callable[[], list[dict]] = pg_live, fetch_gone: Callable[[
         nodes = {}
         if any(r.get("cats") and not r.get("cat_path") for r in seen):
             nodes = {n["id"]: (n["name"], n["parent_id"]) for n in cached("nodes", fetch_nodes)}
-        try:
-            appeal = {a["key"]: {"score": a["score"], "tags": a["tags"] or [], "why": a["why"],
-                                 "aisle": a.get("aisle"), "kind": a.get("kind"), "fit": a.get("fit"),
-                                 "shelf": a.get("shelf"), "size": a.get("size")}
-                      for a in cached("appeal", fetch_appeal)}
-        except Exception:  # noqa: BLE001 — the judgement is an extra; the feed works without it
-            appeal = {}
+        appeal = appeal_map()
         return [{**r, "_sub": subcategory(r, nodes), "_inv": inversion(r),
                  "_appeal": appeal.get(r.get("parent_asin") or r["asin"]) or appeal.get(r["asin"])} for r in live + seen]
 
@@ -567,6 +612,102 @@ def create_app(fetch: Callable[[], list[dict]] = pg_live, fetch_gone: Callable[[
                 "score_version": SCORE_VERSION, "confidence_version": CONFIDENCE_VERSION, "delight_version": DELIGHT_VERSION,
                 "attribution": ATTRIBUTION, "generated_at": now.isoformat()}
 
+    def shelf_meta() -> tuple[dict, dict]:
+        """Shelf rows by id and kind -> shelf id. Without the shelf tables everything lands on the "just in" shelf."""
+        meta, kmap = {}, {}
+        try:
+            meta = {x["id"]: x for x in cached("shelves", fetch_shelves)}
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            kmap = {k["kind"]: k["shelf"] for k in cached("kind_map", fetch_kind_map)}
+        except Exception:  # noqa: BLE001
+            pass
+        return meta, kmap
+
+    def public_deals(now: datetime, acceptable: bool, q: str | None = None,
+                     everything: bool = False) -> tuple[list[dict], list[dict]]:
+        """The one public selection (D45/D46; the shelves page and /api/v1 both call it): 50%+ from a $40 reference,
+        likely still there, not held for price, appeal above JUNK_APPEAL, on a `front` or `aisle` shelf.
+        `everything` keeps junk and hidden shelves too. `acceptable` keeps Acceptable units, but a card is built from
+        its better units whenever it has any, so only an Acceptable-only product reads "Acceptable".
+        Returns (cards with shelf, aisle and size, plus their rows under `_rows`; the rows held for price)."""
+        meta, kmap = shelf_meta()
+        rows = [r for r in pool_for("all", now, wide=True) if _keep(r, "50", acceptable, None, q)]
+        rows = [r for r in rows if r.get("source") is not None or RANK[live_confidence(r, now)["label"]] >= CONF_MIN["likely"]]
+        if acceptable:
+            prime = {card_key(r) for r in rows if r["cond"] != ACCEPTABLE}
+            rows = [r for r in rows if r["cond"] != ACCEPTABLE or card_key(r) not in prime]
+        refs: dict[str, list[int]] = {}
+        for r in rows:
+            r["_shelf"] = resolve_shelf(r["_appeal"], kmap, meta)
+            if r.get("ref_cents"):
+                refs.setdefault(r["_shelf"], []).append(r["ref_cents"])
+        med = {k: statistics.median(v) for k, v in refs.items() if len(v) >= 5}
+        held = [r for r in rows if r["_shelf"] in med and (r.get("ref_cents") or 0) > PRICE_HOLD_X * med[r["_shelf"]]]
+        held_ids = {id(r) for r in held}
+        rows = [r for r in rows if id(r) not in held_ids]
+        out = []
+        for p in group_products(rows, now, keep_rows=True):
+            a = p["appeal"] or {}
+            if not everything and a and a["score"] <= JUNK_APPEAL:
+                continue
+            sid = resolve_shelf(a, kmap, meta)
+            if not everything and shelf_role(meta, sid) == "hidden":
+                continue
+            # a size only means something on items that depend on fit (raters sometimes put a wattage there)
+            p["shelf"], p["size"] = sid, a.get("size") if a.get("fit") and a.get("size") not in (None, "", "-") else None
+            p["aisle"] = meta[sid]["aisle"] if sid in meta else (a.get("aisle") or "other")
+            out.append(p)
+        return out, held
+
+    def public_gone(now: datetime, live_keys: set[str]) -> list[dict]:
+        """api-v1: recently gone units the public selection would have shown (50%+, appeal above JUNK_APPEAL, on a
+        front or aisle shelf), the latest per product, and none whose product is live again. Placed on its shelf."""
+        meta, kmap = shelf_meta()
+        appeal = appeal_map()
+        latest: dict[str, dict] = {}
+        for r in cached("gone", fetch_gone):
+            key = r.get("parent_asin") or r["asin"]
+            a = appeal.get(key) or appeal.get(r["asin"]) or {}
+            sid = resolve_shelf(a, kmap, meta)
+            if ((r["strict"] or 0) < HEADLINE or (r.get("ref_cents") or 0) < 4000 or key in live_keys
+                    or (a and a["score"] <= JUNK_APPEAL) or shelf_role(meta, sid) == "hidden"):
+                continue
+            if key not in latest or r["gone_at"] > latest[key]["gone_at"]:
+                latest[key] = {**r, "_shelf": sid, "_fit": bool(a.get("fit")), "_lifespan": gone_lifespan(r),
+                               "_aisle": meta[sid]["aisle"] if sid in meta else (a.get("aisle") or "other")}
+        return list(latest.values())
+
+    def per_week() -> dict[str, int]:
+        """api-v1: new qualifying products per shelf over the last 7 days (arrival_7d, cached for an hour)."""
+        try:
+            keys = cached("arrivals", fetch_arrivals, ARRIVALS_SECONDS)
+        except Exception:  # noqa: BLE001 — a count is an extra; shelves work without it
+            return {}
+        meta, kmap = shelf_meta()
+        appeal = appeal_map()
+        out: dict[str, int] = {}
+        for k in keys:
+            sid = resolve_shelf(appeal.get(k["key"]), kmap, meta)
+            out[sid] = out.get(sid, 0) + 1
+        return out
+
+    def v1_build(now: datetime) -> dict:
+        cards, _ = public_deals(now, True)
+        live = {card_key(r)[0] for p in cards for r in p["_rows"]}
+        return api_v1.build(now, cards, public_gone(now, live), shelf_meta()[0], per_week())
+
+    snapshot = api_v1.Snapshot(v1_build)
+    app.state.snapshot = snapshot
+    if hosts:
+        site = api_v1.create_site(snapshot, log_click, Path(site_dir or os.environ.get("SITE_DIR") or SITE_DIR),
+                                  lambda: site_open)
+        # Routes resolve before the "/" preview page, so each site host gets the whole site app (gate still applies).
+        app.router.routes[:0] = [Host(h, app=site) for h in hosts]
+        if snapshot_thread:
+            app.router.on_startup.append(snapshot.start)
+
     @app.get("/api/shelves")
     def shelves(request: Request, aisle: str | None = Query(None, max_length=40),
                 shelf: str | None = Query(None, max_length=80), q: str | None = Query(None, max_length=80),
@@ -580,46 +721,20 @@ def create_app(fetch: Callable[[], list[dict]] = pg_live, fetch_gone: Callable[[
         now = datetime.now(timezone.utc)
         admin = bool(is_admin(request))
         review = review and admin
-        meta, kmap = {}, {}
-        try:  # without the shelf tables everything lands on the "just in" shelf
-            meta = {x["id"]: x for x in cached("shelves", fetch_shelves)}
-        except Exception:  # noqa: BLE001
-            pass
-        try:
-            kmap = {k["kind"]: k["shelf"] for k in cached("kind_map", fetch_kind_map)}
-        except Exception:  # noqa: BLE001
-            pass
-
-        def place(a: dict | None) -> str:
-            return resolve_shelf(a, kmap, meta)
-
-        rows = [r for r in pool_for("all", now, wide=True) if _keep(r, "50", False, None, q)]
-        rows = [r for r in rows if r.get("source") is not None or RANK[live_confidence(r, now)["label"]] >= CONF_MIN["likely"]]
-        refs: dict[str, list[int]] = {}
-        for r in rows:
-            r["_shelf"] = place(r["_appeal"])
-            if r.get("ref_cents"):
-                refs.setdefault(r["_shelf"], []).append(r["ref_cents"])
-        med = {k: statistics.median(v) for k, v in refs.items() if len(v) >= 5}
-        held = [r for r in rows if r["_shelf"] in med and (r.get("ref_cents") or 0) > PRICE_HOLD_X * med[r["_shelf"]]]
-        held_ids = {id(r) for r in held}
-        rows = [r for r in rows if id(r) not in held_ids]
+        meta, _ = shelf_meta()
+        cards, held = public_deals(now, False, q, everything=everything or review)
 
         def role(sid: str) -> str:
-            return meta[sid]["role"] if sid in meta else "front"  # unrated arrivals show, last
+            return shelf_role(meta, sid)
 
         shown = {"front", "aisle", "hidden"} if everything or review else {"front", "aisle"} if aisle else {"front"}
         products, aisles = [], {}
-        for p in group_products(rows, now):
+        for p in cards:
+            p.pop("_rows")
             a = p["appeal"] or {}
-            if not (everything or review) and a and a["score"] <= JUNK_APPEAL:
-                continue
             if nofit and a.get("fit"):
                 continue
-            sid = place(a)
-            # a size only means something on items that depend on fit (raters sometimes put a wattage there)
-            p["shelf"], p["size"] = sid, a.get("size") if a.get("fit") and a.get("size") not in (None, "", "-") else None
-            p["aisle"] = meta[sid]["aisle"] if sid in meta else (a.get("aisle") or "other")
+            sid = p["shelf"]
             if role(sid) in shown | {"aisle"}:  # an aisle chip counts what that aisle shows
                 c = aisles.setdefault(p["aisle"], [0, 0])
                 c[0] += 1

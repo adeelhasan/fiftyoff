@@ -1,0 +1,75 @@
+{
+  "shelf": {
+    "id": "gaming-gear",
+    "name": "Gaming gear",
+    "aisle": "gaming",
+    "aisle_name": "Gaming",
+    "description": "Controllers, mice, headsets and the rest of the desk.",
+    "live": 3,
+    "per_week": 2
+  },
+  "deals": [
+    {
+      "id": "B0C1234567",
+      "slug": "b0c1234567-thrustmaster-eswap-x-pro-controller-for",
+      "title": "Thrustmaster eSwap X Pro Controller for Xbox Series X|S",
+      "image": "https://m.media-amazon.com/images/I/61aBcDeFgHL.jpg",
+      "shelf": "gaming-gear",
+      "aisle": "gaming",
+      "pct_off": 51,
+      "price": 71.34,
+      "from": false,
+      "usual_price": 145.99,
+      "condition": "Like New",
+      "variants": 1,
+      "units": 1,
+      "fit": false,
+      "landed_at": "2026-10-11T14:00:00Z",
+      "is_new": true,
+      "url": "/d/b0c1234567-thrustmaster-eswap-x-pro-controller-for"
+    },
+    {
+      "id": "B0GAME0002",
+      "slug": "b0game0002-logitech-g-pro-x-superlight-2",
+      "title": "Logitech G Pro X Superlight 2 Wireless Gaming Mouse",
+      "image": "https://m.media-amazon.com/images/I/61GameMouse.jpg",
+      "shelf": "gaming-gear",
+      "aisle": "gaming",
+      "pct_off": 53,
+      "price": 74.99,
+      "from": false,
+      "usual_price": 159.99,
+      "condition": "Very Good",
+      "variants": 1,
+      "units": 1,
+      "fit": false,
+      "landed_at": "2026-10-10T09:00:00Z",
+      "is_new": false,
+      "url": "/d/b0game0002-logitech-g-pro-x-superlight-2"
+    },
+    {
+      "id": "B0GAME0003",
+      "slug": "b0game0003-steelseries-arctis-nova-pro-wireless-headset",
+      "title": "SteelSeries Arctis Nova Pro Wireless Headset",
+      "image": "https://m.media-amazon.com/images/I/71NovaPro2.jpg",
+      "shelf": "gaming-gear",
+      "aisle": "gaming",
+      "pct_off": 51,
+      "price": 169.99,
+      "from": false,
+      "usual_price": 349.99,
+      "condition": "Good",
+      "variants": 1,
+      "units": 1,
+      "fit": false,
+      "landed_at": "2026-10-09T13:00:00Z",
+      "is_new": false,
+      "url": "/d/b0game0003-steelseries-arctis-nova-pro-wireless-headset"
+    }
+  ],
+  "generated_at": "2026-10-11T15:00:00Z",
+  "attribution": {
+    "text": "Data by Keepa",
+    "url": "https://keepa.com"
+  }
+}

@@ -33,5 +33,9 @@ GRANT SELECT ON shelf TO feed_reader;
 GRANT UPDATE (role, updated_by, updated_at) ON shelf TO feed_reader;
 -- Notifications v1: watcher counts per shelf (shown to admins)
 GRANT SELECT ON shelf_watchers TO feed_reader;
+-- api-v1: /d/ click log (insert only) and new arrivals per shelf (per_week)
+GRANT INSERT ON click TO feed_reader;
+GRANT USAGE ON SEQUENCE click_id_seq TO feed_reader;
+GRANT SELECT ON arrival_7d TO feed_reader;
 SQL
-echo "feed_reader: SELECT on the feed, gone, status and admin views; INSERT/UPDATE on curation and app_user, INSERT on their logs"
+echo "feed_reader: SELECT on the feed, gone, status and admin views; INSERT/UPDATE on curation and app_user, INSERT on their logs and click"

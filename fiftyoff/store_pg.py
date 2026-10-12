@@ -291,11 +291,13 @@ SELECT h.h AS hour,
 FROM h ORDER BY 1;
 
 -- Recently gone qualifying units, retired watches included (D27: shown with their last price).
+-- api-v1: priced_at and parent_asin appended (CREATE OR REPLACE VIEW only adds columns at the end).
 CREATE OR REPLACE VIEW gone_internal AS
 SELECT u.asin, u.offer_id, w.title, w.category, w.image, u.cond, u.last_price_cents AS resale_cents,
        u.ref_last_cents AS ref_cents, u.strict_last AS strict, u.last_seen_at, u.gone_at,
        p.brand, p.cat_path, p.reviews, p.rating, p.drops30, p.monthly_sold, p.amazon_sells, p.rank,
-       u.first_seen_at, u.appeared_after_at, u.keepa_first_seen_at, u.absent_since_at, u.revivals
+       u.first_seen_at, u.appeared_after_at, u.keepa_first_seen_at, u.absent_since_at, u.revivals,
+       w.created_at AS priced_at, w.parent_asin
 FROM units u JOIN watch w USING (asin) LEFT JOIN product p USING (asin)
 WHERE u.state = 'gone' AND u.gone_at > now() - interval '7 days' AND ((u.strict_last >= 0.40 AND u.ref_last_cents >= 10000) OR (u.strict_last >= 0.30 AND u.ref_last_cents >= 20000))
   AND NOT EXISTS (SELECT 1 FROM unlisted x WHERE x.asin = u.asin);  -- D36
@@ -357,6 +359,29 @@ JOIN interest i ON (i.kind = 'shelf' AND i.value = s.id) OR (i.kind = 'aisle' AN
 JOIN subscriber sub ON sub.id = i.subscriber_id AND NOT sub.paused
 WHERE EXISTS (SELECT 1 FROM endpoint e WHERE e.subscriber_id = sub.id AND e.disabled_at IS NULL)
 GROUP BY s.id;
+-- api-v1 (docs/handoffs/api-v1.md): a shelf's one-line description (NULL = the page skips the line).
+ALTER TABLE shelf ADD COLUMN IF NOT EXISTS description text;
+-- api-v1: one row per /d/ hit (the site's way out to Amazon). No IP, no cookie; referer_path has no query string.
+CREATE TABLE IF NOT EXISTS click (
+  id bigserial PRIMARY KEY, at timestamptz NOT NULL DEFAULT now(), asin text, slug text, surface text,
+  live boolean, referer_path text
+);
+CREATE INDEX IF NOT EXISTS click_at ON click (at);
+-- api-v1 per_week: product keys (parent ASIN, else ASIN) that newly qualified for the public selection (50%+ from
+-- a $40 reference) in the last 7 days: units we first saw, and feed/census rows Keepa priced, in that window.
+-- The API places each key on its shelf. Census keeps its Clothing condition rule (CENSUS_CONDS, D38).
+CREATE OR REPLACE VIEW arrival_7d AS
+SELECT coalesce(w.parent_asin, w.asin) AS key FROM units u JOIN watch w USING (asin)
+WHERE u.first_seen_at > now() - interval '7 days' AND u.strict_first >= 0.5 AND u.ref_last_cents >= 4000
+UNION
+SELECT coalesce(parent_asin, asin) FROM sweep_rows
+WHERE swept_at > now() - interval '7 days' AND strict >= 0.5 AND ref_cents >= 4000
+  AND to_timestamp((creation_kmin + 21564000) * 60.0) > now() - interval '7 days'
+UNION
+SELECT coalesce(parent_asin, asin) FROM census_rows
+WHERE swept_at > now() - interval '7 days' AND strict >= 0.5 AND ref_cents >= 4000
+  AND to_timestamp((creation_kmin + 21564000) * 60.0) > now() - interval '7 days'
+  AND (cat_id <> 7141123011 OR cond = 'Used - Like New');
 """
 
 

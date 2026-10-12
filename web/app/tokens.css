@@ -1,0 +1,65 @@
+/* Copied from design/tokens/tokens.css (the source of truth). Changes: the Google Fonts @import is dropped,
+   next/font self-hosts the fonts (app/fonts.ts) and the four font tokens point at its variables. */
+
+:root {
+  /* Brand + surfaces (light) */
+  --fo-ground: #E6E6E2;        /* page background */
+  --fo-slip: #FFFFFF;          /* cards, sheets, headers, photo backgrounds */
+  --fo-slip-muted: #F1F1EE;    /* acceptable + gone cards, footnote panels */
+  --fo-ink: #222326;           /* primary text, selected chips, dark buttons */
+  --fo-ink-2: #45464A;         /* secondary text (>= 14px) */
+  --fo-rule: #B5B5AE;          /* dashed tear lines, chip borders */
+  --fo-rule-soft: #ECECE8;     /* hairlines in email, image frames */
+  --fo-stamp: #4B3BA6;         /* brand violet: % stamp, "Off", primary actions, links */
+  --fo-stamp-pressed: #3A2C96; /* hover/pressed; stamp on kraft */
+  --fo-stamp-deep: #2B1F8C;    /* text on stamp-tint, links on kraft */
+  --fo-stamp-tint: #ECE9FA;    /* selected interest chip, watch-button hover */
+  --fo-stamp-muted: #6F64A8;   /* stamp on Acceptable cards */
+  --fo-kraft: #D9BC92;         /* footer, email header, size tag, app icon */
+  --fo-kraft-ink: #2A1E10;     /* text on kraft */
+
+  /* Semantic: never use brand violet for these */
+  --fo-good: #2E7D32;   --fo-good-tint: #E5F2E5;   --fo-good-ink: #1F5A22;
+  --fo-warn: #9A6700;   --fo-warn-tint: #FFF6E0;   --fo-warn-ink: #6E4A00;
+  --fo-gone: #7A7A75;   --fo-gone-tint: #ECECE8;   --fo-gone-ink: #5E5E59;
+
+  /* Type */
+  --fo-font-display: var(--font-display), Impact, sans-serif; /* weight 900 only */
+  --fo-font-text: var(--font-text), system-ui, sans-serif;
+  --fo-font-mono: var(--font-mono), ui-monospace, monospace;      /* weight 600, caps labels */
+  --fo-font-grade: var(--font-grade), cursive;                   /* condition grade only */
+
+  /* Radius / elevation */
+  --fo-radius: 2px;               /* buttons, chips, inputs. Cards and photos: 0 */
+  --fo-shadow-sheet: 0 12px 32px rgba(34,35,38,.16);
+  --fo-scrim: rgba(34,35,38,.45);
+  --fo-stamp-backing: rgba(255,255,255,.85);
+
+  /* Layout */
+  --fo-max-width: 1280px;
+  --fo-gutter: 40px;
+  --fo-section-gap: 56px;
+  --fo-card-gap: 18px;
+  --fo-card-min: 196px;           /* grid: repeat(auto-fill, minmax(var(--fo-card-min), 1fr)) */
+}
+
+[data-theme="dark"] {
+  --fo-ground: #1E1F1C;
+  --fo-slip: #2C2D29;
+  --fo-slip-muted: #262723;
+  --fo-ink: #EDEDE8;
+  --fo-ink-2: #C4C4BC;
+  --fo-rule: #4A4B46;
+  --fo-stamp: #A99CFF;            /* text, links, outlines on dark */
+  --fo-stamp-tint: #33305A;
+  --fo-kraft: #B48E5E;
+  --fo-good: #7BC67E;
+  --fo-warn: #E0B44C;
+  --fo-gone: #9A9A92;
+  /* Photos ALWAYS sit on #FFFFFF (photo well, inset 8px). The % stamp on a photo stays #4B3BA6. */
+}
+
+:focus-visible { outline: 2px solid var(--fo-stamp); outline-offset: 2px; }
+a { color: var(--fo-stamp); text-underline-offset: 3px; }
+a:hover { color: var(--fo-stamp-pressed); }
+.fo-tnum { font-variant-numeric: tabular-nums; }

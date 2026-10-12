@@ -7,6 +7,12 @@ Anything else lands on the "just in" shelf.
 from __future__ import annotations
 
 UNSORTED = "just-in"  # D45: the shelf for products not rated yet
+# Display names for the rater's aisle ids (appeal.AISLES); the shelves page and /api/v1 show these.
+AISLE_NAMES = {"tech": "Tech", "gaming": "Gaming", "audio-tv": "Audio & TV", "kitchen": "Kitchen",
+               "home-appliances": "Home appliances", "home-decor": "Home & decor", "diy": "DIY & fixtures",
+               "outdoors": "Outdoors", "fitness-sports": "Fitness & sports", "travel": "Travel", "fashion": "Fashion",
+               "beauty-health": "Beauty & health", "toys-kids": "Toys & kids", "pets": "Pets",
+               "office-school": "Office & school", "auto": "Auto", "music": "Music", "other": "Other"}
 
 
 def resolve_shelf(appeal: dict | None, kind_map: dict[str, str], shelves: dict[str, dict]) -> str:

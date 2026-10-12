@@ -1,0 +1,81 @@
+{
+  "shelves": [
+    {
+      "id": "gaming-gear",
+      "name": "Gaming gear",
+      "aisle": "gaming",
+      "aisle_name": "Gaming",
+      "description": "Controllers, mice, headsets and the rest of the desk.",
+      "live": 3,
+      "per_week": 2
+    },
+    {
+      "id": "headphones-earbuds",
+      "name": "Headphones & earbuds",
+      "aisle": "audio-tv",
+      "aisle_name": "Audio & TV",
+      "description": null,
+      "live": 2,
+      "per_week": 2
+    },
+    {
+      "id": "robot-vacuums",
+      "name": "Robot vacuums",
+      "aisle": "home-appliances",
+      "aisle_name": "Home appliances",
+      "description": null,
+      "live": 2,
+      "per_week": 0
+    },
+    {
+      "id": "espresso-coffee-makers",
+      "name": "Espresso & coffee makers",
+      "aisle": "kitchen",
+      "aisle_name": "Kitchen",
+      "description": null,
+      "live": 1,
+      "per_week": 2
+    },
+    {
+      "id": "luggage",
+      "name": "Luggage",
+      "aisle": "travel",
+      "aisle_name": "Travel",
+      "description": null,
+      "live": 1,
+      "per_week": 0
+    },
+    {
+      "id": "pc-components",
+      "name": "Pc components",
+      "aisle": "tech",
+      "aisle_name": "Tech",
+      "description": null,
+      "live": 1,
+      "per_week": 0
+    },
+    {
+      "id": "small-kitchen-appliances",
+      "name": "Small kitchen appliances",
+      "aisle": "kitchen",
+      "aisle_name": "Kitchen",
+      "description": null,
+      "live": 0,
+      "per_week": 0
+    },
+    {
+      "id": "just-in",
+      "name": "Just in",
+      "aisle": "other",
+      "aisle_name": "Other",
+      "description": null,
+      "live": 1,
+      "per_week": 1
+    }
+  ],
+  "generated_at": "2026-10-11T15:00:00Z",
+  "attribution": {
+    "text": "Data by Keepa",
+    "url": "https://keepa.com"
+  }
+}

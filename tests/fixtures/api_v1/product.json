@@ -1,0 +1,27 @@
+{
+  "deal": {
+    "id": "B0ESPR0002",
+    "slug": "b0espr0002-breville-barista-express-espresso-machine-black",
+    "title": "Breville Barista Express Espresso Machine, Black Truffle",
+    "image": "https://m.media-amazon.com/images/I/81BrevBEb2.jpg",
+    "shelf": "espresso-coffee-makers",
+    "aisle": "kitchen",
+    "pct_off": 60,
+    "price": 279.99,
+    "from": true,
+    "usual_price": 699.95,
+    "condition": "Very Good",
+    "variants": 2,
+    "units": 2,
+    "fit": false,
+    "landed_at": "2026-10-11T09:00:00Z",
+    "is_new": true,
+    "url": "/d/b0espr0002-breville-barista-express-espresso-machine-black"
+  },
+  "gone": null,
+  "same_shelf": [],
+  "attribution": {
+    "text": "Data by Keepa",
+    "url": "https://keepa.com"
+  }
+}

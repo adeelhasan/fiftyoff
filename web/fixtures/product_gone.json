@@ -1,0 +1,51 @@
+{
+  "deal": null,
+  "gone": {
+    "id": "B0GONE0001",
+    "slug": "b0gone0001-de-longhi-dedica-espresso-machine",
+    "title": "De'Longhi Dedica Espresso Machine",
+    "image": "https://m.media-amazon.com/images/I/71DeLongDd.jpg",
+    "shelf": "espresso-coffee-makers",
+    "aisle": "kitchen",
+    "pct_off": 60,
+    "price": 119.99,
+    "from": false,
+    "usual_price": 299.99,
+    "condition": "Like New",
+    "variants": 1,
+    "units": 1,
+    "fit": false,
+    "landed_at": "2026-10-11T00:00:00Z",
+    "is_new": false,
+    "url": "/d/b0gone0001-de-longhi-dedica-espresso-machine",
+    "gone_at": "2026-10-11T12:00:00Z",
+    "last_price": 119.99,
+    "up_for_min": 300,
+    "up_for_is_lower_bound": false
+  },
+  "same_shelf": [
+    {
+      "id": "B0ESPR0002",
+      "slug": "b0espr0002-breville-barista-express-espresso-machine-black",
+      "title": "Breville Barista Express Espresso Machine, Black Truffle",
+      "image": "https://m.media-amazon.com/images/I/81BrevBEb2.jpg",
+      "shelf": "espresso-coffee-makers",
+      "aisle": "kitchen",
+      "pct_off": 60,
+      "price": 279.99,
+      "from": true,
+      "usual_price": 699.95,
+      "condition": "Very Good",
+      "variants": 2,
+      "units": 2,
+      "fit": false,
+      "landed_at": "2026-10-11T09:00:00Z",
+      "is_new": true,
+      "url": "/d/b0espr0002-breville-barista-express-espresso-machine-black"
+    }
+  ],
+  "attribution": {
+    "text": "Data by Keepa",
+    "url": "https://keepa.com"
+  }
+}

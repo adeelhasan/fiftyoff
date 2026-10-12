@@ -1,0 +1,87 @@
+{
+  "deals": [
+    {
+      "id": "B0C1234567",
+      "slug": "b0c1234567-thrustmaster-eswap-x-pro-controller-for",
+      "title": "Thrustmaster eSwap X Pro Controller for Xbox Series X|S",
+      "image": "https://m.media-amazon.com/images/I/61aBcDeFgHL.jpg",
+      "shelf": "gaming-gear",
+      "aisle": "gaming",
+      "pct_off": 51,
+      "price": 71.34,
+      "from": false,
+      "usual_price": 145.99,
+      "condition": "Like New",
+      "variants": 1,
+      "units": 1,
+      "fit": false,
+      "landed_at": "2026-10-11T14:00:00Z",
+      "is_new": true,
+      "url": "/d/b0c1234567-thrustmaster-eswap-x-pro-controller-for"
+    },
+    {
+      "id": "B0GAME0002",
+      "slug": "b0game0002-logitech-g-pro-x-superlight-2",
+      "title": "Logitech G Pro X Superlight 2 Wireless Gaming Mouse",
+      "image": "https://m.media-amazon.com/images/I/61GameMouse.jpg",
+      "shelf": "gaming-gear",
+      "aisle": "gaming",
+      "pct_off": 53,
+      "price": 74.99,
+      "from": false,
+      "usual_price": 159.99,
+      "condition": "Very Good",
+      "variants": 1,
+      "units": 1,
+      "fit": false,
+      "landed_at": "2026-10-10T09:00:00Z",
+      "is_new": false,
+      "url": "/d/b0game0002-logitech-g-pro-x-superlight-2"
+    }
+  ],
+  "count": 3,
+  "total": 11,
+  "new_count": 1,
+  "aisles": [
+    {
+      "id": "gaming",
+      "name": "Gaming",
+      "count": 3
+    },
+    {
+      "id": "audio-tv",
+      "name": "Audio & TV",
+      "count": 2
+    },
+    {
+      "id": "home-appliances",
+      "name": "Home appliances",
+      "count": 1
+    },
+    {
+      "id": "kitchen",
+      "name": "Kitchen",
+      "count": 1
+    },
+    {
+      "id": "other",
+      "name": "Other",
+      "count": 1
+    },
+    {
+      "id": "tech",
+      "name": "Tech",
+      "count": 1
+    },
+    {
+      "id": "travel",
+      "name": "Travel",
+      "count": 1
+    }
+  ],
+  "generated_at": "2026-10-11T15:00:00Z",
+  "attribution": {
+    "text": "Data by Keepa",
+    "url": "https://keepa.com"
+  }
+}

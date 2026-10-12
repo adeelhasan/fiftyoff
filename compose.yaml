@@ -78,8 +78,14 @@ services:
       CF_ACCESS_TEAM: ${CF_ACCESS_TEAM:-}
       CF_ACCESS_AUD: ${CF_ACCESS_AUD:-}
       ADMIN_EMAILS: ${ADMIN_EMAILS:-}
+      # api-v1: these hosts get the site (web/out + /api/v1 + /d/); SITE_OPEN=true drops the preview password for
+      # them and lets Cloudflare cache /api/v1 (step 7, docs/handoffs/api-v1.md). Empty -> no site.
+      SITE_HOSTS: ${SITE_HOSTS:-}
+      SITE_OPEN: ${SITE_OPEN:-}
+      SITE_DIR: /srv/web
     volumes:
       - ./preflight.toml:/app/preflight.toml:ro   # [admin] tags
+      - ./web/out:/srv/web:ro                     # the static site (scripts/deploy-web.sh rsyncs it; no restart needed)
     ports:
       - "127.0.0.1:8000:8000"   # localhost only; reach it over an SSH tunnel or a Cloudflare Tunnel
     depends_on:
