@@ -509,6 +509,7 @@ def test_sizes_page_quotes_the_unit_in_your_size_and_counts_the_picker():
     ("Stride Rite Unisex M2P Journey 3.0 (Toddler) Silver Sparkle 6.5 Wide", "sneakers-running-shoes", "Kids 6.5 Wide"),
     ("Kasper Women's Sheath Dress W/Waistband Frame, Black Multi", "dresses", None),
     ("Merrell Trail Glove 8 White", "sneakers-running-shoes", None),
+    ("Vionic Women's Tide Sandal, Black, 09", "sandals-flats", "Women's 9"),
     ("Cole Haan Men's Pinch Tassel Loafer, Burgundy, 8 E US", "dress-shoes-heels", "Men's 8"),
 ])
 def test_size_parser(title, shelf, label):

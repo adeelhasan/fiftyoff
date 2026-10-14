@@ -132,6 +132,7 @@ section { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
 .chip:hover { border-color: var(--fo-ink); color: var(--fo-ink); }
 .chip[aria-pressed="true"] { background: var(--fo-ink); border-color: var(--fo-ink); color: var(--fo-on-ink); font-weight: 600; }
 .chip .n { font-size: 14px; color: var(--fo-ink-2); }
+.chip[aria-pressed="true"] .n { color: var(--fo-on-ink); opacity: .75; }
 .chip.aisle { font-size: 16px; }
 .chips-scroll { display: flex; gap: 8px; overflow-x: auto; scrollbar-width: none; margin: 0 calc(-1 * var(--fo-gutter)); padding: 0 var(--fo-gutter); }
 .chips-scroll::-webkit-scrollbar { display: none; }

@@ -86,7 +86,7 @@ def parse_text(s: str | None, shelf: str | None, title: str = "") -> dict | None
             if shelf == "workwear" and not width and not rest and "." not in m[1]:
                 pass  # a bare number on workwear is more likely a numbered garment; fall through
             else:
-                v = m[1].removesuffix(".0")
+                v = f"{float(m[1]):g}"  # "07.5" -> "7.5", "09" -> "9", "10.0" -> "10"
                 return _size("shoe", v, wearer=_wearer(title, rest), width=width)
     letters = _letter(t)
     if letters:
