@@ -1,11 +1,15 @@
 "use client";
 import { useEffect } from "react";
-import { api } from "@/lib/api";
+import { arm } from "@/lib/ab";
+import { api, countView } from "@/lib/api";
 import { count } from "@/lib/format";
 import { useApi, useIdFromUrl, useNow } from "@/lib/hooks";
 import { DealCard, SkeletonGrid } from "../DealCard";
 import { Empty, LoadError } from "../States";
 import { WatchPanel } from "../Watch";
+
+// trust-first §2.2: shelves where "was it worn? is it genuine?" comes up get a line on the grades
+const WORN = new Set(["jewelry", "watches", "rings", "handbags-sunglasses"]);
 
 // One exported page at /shelf/_/; FastAPI serves it for every /shelf/{id}/ and the id comes from the URL.
 export default function ShelfPage() {
@@ -16,6 +20,7 @@ export default function ShelfPage() {
   useEffect(() => {
     if (data) document.title = `${data.shelf.name} · fiftyOff`;
   }, [data]);
+  useEffect(() => countView("shelf", arm()), []);
 
   if (id === undefined || (!data && !error)) return <ShelfSkeleton />;
   if (!data) {
@@ -29,7 +34,11 @@ export default function ShelfPage() {
     );
   }
 
-  const { shelf, deals } = data;
+  // Acceptable units go last, under their own label, so "N live" (which leaves them out, like everywhere) matches
+  const { shelf } = data;
+  const prime = data.deals.filter((d) => d.condition !== "Acceptable");
+  const worn = data.deals.filter((d) => d.condition === "Acceptable");
+  const deals = prime;
   return (
     <section style={{ gap: 32 }}>
       <div className="shelf-top">
@@ -39,9 +48,14 @@ export default function ShelfPage() {
           </div>
           <h1 className="shelf-title">{shelf.name}</h1>
           {shelf.description && <p className="desc">{shelf.description}</p>}
+          {WORN.has(shelf.id) && (
+            <p className="cond-line">
+              Returns graded by Amazon: Like New may have been tried on. <a href="/how-we-price/#conditions">What the grades mean</a>.
+            </p>
+          )}
           <div className="stats">
             <span>
-              <b className="tnum">{count(shelf.live)}</b> live now
+              <b className="tnum">{count(shelf.live)}</b> live now{worn.length ? `, plus ${count(worn.length)} Acceptable` : ""}
             </span>
             {shelf.per_week ? (
               <span>
@@ -53,13 +67,35 @@ export default function ShelfPage() {
         <WatchPanel shelf={shelf.name} />
       </div>
       {deals.length ? (
-        <div className="grid w210">
-          {deals.map((d) => (
-            <DealCard key={d.id} d={d} now={now} />
-          ))}
-        </div>
-      ) : (
+        <>
+          <div className="grid w210" role="list">
+            {deals.slice(0, 4).map((d) => (
+              <DealCard key={d.id} d={d} now={now} />
+            ))}
+          </div>
+          <div className="watch-after">
+            <WatchPanel shelf={shelf.name} />
+          </div>
+          {deals.length > 4 && (
+            <div className="grid w210" role="list">
+              {deals.slice(4).map((d) => (
+                <DealCard key={d.id} d={d} now={now} />
+              ))}
+            </div>
+          )}
+        </>
+      ) : worn.length ? null : (
         <Empty>Every unit on this shelf has gone. New ones land most weeks.</Empty>
+      )}
+      {worn.length > 0 && (
+        <>
+          <div className="group-label later">ACCEPTABLE · VISIBLE WEAR</div>
+          <div className="grid w210" role="list">
+            {worn.map((d) => (
+              <DealCard key={d.id} d={d} now={now} />
+            ))}
+          </div>
+        </>
       )}
     </section>
   );

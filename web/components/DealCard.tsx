@@ -1,5 +1,7 @@
+import { dealPath } from "@/lib/share";
 import type { Deal, Gone } from "@/lib/types";
-import { ago, freshness, minutesSince, money, outLink, variantTag } from "@/lib/format";
+import { Usual } from "./Usual";
+import { ago, freshness, minutesSince, money, OUT, outLink, variantTag } from "@/lib/format";
 
 export const WEAR_LINE = "Visible wear. Works, may lack box or extras.";
 
@@ -30,33 +32,52 @@ export function Photo({ src, alt, eager }: { src: string | null; alt: string; ea
   );
 }
 
+/** What a screen reader says for a card (REPORT 24): "Sony lens, 53% off, $153.80, Like New, on Amazon". */
+export function cardName(d: Deal): string {
+  const words = d.title.split(/\s+/);
+  const short = words.length > 10 ? words.slice(0, 10).join(" ") + "…" : d.title;
+  const was = d.usual_price ? `, usually ${money(d.usual_price)}` : "";
+  return `${short}, ${d.pct_off}% off, ${d.from ? "from " : ""}${money(d.price)}${was}, ${d.condition}, opens Amazon`;
+}
+
 /** The grid card. The whole card is one plain link to our /d/ redirect (never next/link, never Amazon). */
-export function DealCard({ d, shelfLabel, now }: { d: Deal; shelfLabel?: string; now: number }) {
+export function DealCard({ d, shelfLabel, now, source }: { d: Deal; shelfLabel?: string; now: number; source?: string }) {
   const acceptable = d.condition === "Acceptable";
   const tag = variantTag(d);
   const f = freshness(d, now || undefined);
   return (
-    <a className={`card${acceptable ? " acceptable" : ""}`} href={outLink(d)}>
-      <div className="photo">
-        <Photo src={d.image} alt={d.title} />
-        <PctStamp pct={d.pct_off} muted={acceptable} />
-        <Grade condition={d.condition} />
-        {tag && <span className="vtag">{tag}</span>}
-      </div>
-      <div className="body">
-        {shelfLabel && <span className="mono ink2">{shelfLabel}</span>}
-        <div className="line">
-          {d.from && <span className="from">from</span>}
-          <span className="price tnum">{money(d.price)}</span>
-          {d.title}
+    <div className="li" role="listitem">
+      <a className={`card${acceptable ? " acceptable" : ""}`} href={outLink(d, source)} {...OUT} aria-label={cardName(d)}>
+        <div className="photo">
+          <Photo src={d.image} alt="" />
+          <PctStamp pct={d.pct_off} muted={acceptable} />
+          <Grade condition={d.condition} />
+          {tag && <span className="vtag">{tag}</span>}
+          {d.size && <span className="size-tag">{d.size}</span>}
         </div>
-        {acceptable ? (
-          <span className="wear">{WEAR_LINE}</span>
-        ) : (
-          now > 0 && f.text && <span className={`fresh${f.isNew ? " new" : ""}`}>{f.text}</span>
-        )}
-      </div>
-    </a>
+        <div className="body">
+          {shelfLabel && <span className="mono ink2">{shelfLabel}</span>}
+          <div className="line">
+            {d.from && <span className="from">from </span>}
+            <span className="price tnum">{money(d.price)}</span>
+            {d.title}
+          </div>
+          <Usual d={d} />
+          {acceptable ? (
+            <span className="wear">{WEAR_LINE}</span>
+          ) : (
+            now > 0 && f.text && <span className={`fresh${f.isNew ? " new" : ""}`}>{f.text}</span>
+          )}
+          <span className="out">
+            On Amazon <span aria-hidden>↗</span>
+          </span>
+        </div>
+      </a>
+      {/* a plain link: /deal/{slug}/ has no Next route (FastAPI serves the one exported page), so no client routing */}
+      <a className="card-share" href={dealPath(d)} aria-label={`Details and share: ${d.title.slice(0, 60)}`} title="Details and share">
+        <span aria-hidden>⤴</span>
+      </a>
+    </div>
   );
 }
 
@@ -66,7 +87,7 @@ export function GoneMini({ g, now }: { g: Gone; now: number }) {
   return (
     <div className="card gone">
       <div className="photo">
-        <Photo src={g.image} alt={g.title} />
+        <Photo src={g.image} alt="" />
         <div className="gone-stamp" aria-hidden>
           GONE
         </div>

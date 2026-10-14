@@ -453,6 +453,20 @@ def test_feed_keeps_the_tiers_while_shelves_take_the_40_dollar_band():
     assert "B0CHEAP001" in [p["asin"] for s in shelves for p in s["products"]]
 
 
+def test_public_drops_held_and_tracked_gone_sightings():
+    """Beta QA 10-12: a held ASIN's sweep row, and a sighting older than our own gone check, stay off the public
+    selection. A sighting after our units went (a relisted unit) stays."""
+    base = {**rows()[0], "parent_asin": None, "ref_cents": 20000, "resale_cents": 8000, "strict": 0.60,
+            "source": "feed", "in_tiers": True}
+    seen_at = base["last_confirmed_at"]
+    held = {**base, "asin": "B0HELD0001", "held": True}
+    went = {**base, "asin": "B0WENT0001", "units_gone_at": seen_at + timedelta(minutes=2)}
+    back = {**base, "asin": "B0BACK0001", "units_gone_at": seen_at - timedelta(hours=3)}
+    c = app(fetch_seen=lambda: [held, went, back])
+    shown = [p["asin"] for s in c.get("/api/shelves?everything=true").json()["shelves"] for p in s["products"]]
+    assert "B0HELD0001" not in shown and "B0WENT0001" not in shown and "B0BACK0001" in shown
+
+
 def test_shelf_roles_are_set_by_admins_only():
     calls = []
     c = admin_app(fetch_shelves=lambda: SHELVES, set_shelf_role=lambda i, r, by: calls.append((i, r, by)) or {"id": i, "role": r})

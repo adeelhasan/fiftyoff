@@ -1,6 +1,7 @@
 "use client";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useEffect, useState, type FormEvent } from "react";
 
 export function Wordmark({ framed }: { framed?: boolean }) {
   return (
@@ -14,12 +15,23 @@ export function Wordmark({ framed }: { framed?: boolean }) {
 const NAV = [
   { href: "/", label: "Today" },
   { href: "/deals/", label: "All deals" },
+  { href: "/sizes/", label: "By size" },
   { href: "/gone/", label: "Recently gone" },
 ];
 
-// The design's header search, "Sign in" and watch status are left out until search and accounts exist (web.md).
+// "Sign in" and watch status are left out until accounts exist (web.md). Search: trust-first §4.1.
 export function Header() {
   const path = usePathname();
+  const [q, setQ] = useState("");
+  useEffect(() => {
+    if (path.startsWith("/deals")) setQ(new URLSearchParams(location.search).get("q") ?? "");
+  }, [path]);
+  const go = (e: FormEvent) => {
+    e.preventDefault();
+    const t = q.trim();
+    // a full navigation, so All deals reads the new query from the URL whichever page we're on
+    location.assign(t ? `/deals/?q=${encodeURIComponent(t)}` : "/deals/");
+  };
   return (
     <header className="header">
       <div className="wrap">
@@ -31,6 +43,19 @@ export function Header() {
             </Link>
           ))}
         </nav>
+        <form className="search" role="search" onSubmit={go}>
+          <input
+            type="search"
+            aria-label="Search deals"
+            placeholder="Search: brand or product"
+            value={q}
+            maxLength={80}
+            onChange={(e) => setQ(e.target.value)}
+          />
+          <button type="submit" aria-label="Search">
+            <span aria-hidden>⌕</span>
+          </button>
+        </form>
       </div>
     </header>
   );

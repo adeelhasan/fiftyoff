@@ -1,0 +1,31 @@
+{
+  "deals": [
+    {
+      "id": "B0LUGG0001",
+      "slug": "b0lugg0001-samsonite-freeform-hardside-spinner-large-checked",
+      "title": "Samsonite Freeform Hardside Spinner, Large Checked",
+      "image": "https://m.media-amazon.com/images/I/71SamsoFF1.jpg",
+      "shelf": "luggage",
+      "aisle": "travel",
+      "pct_off": 62,
+      "price": 99.99,
+      "from": false,
+      "usual_price": 259.99,
+      "condition": "Like New",
+      "variants": 1,
+      "units": 1,
+      "fit": true,
+      "size": "L",
+      "landed_at": "2026-10-09T23:00:00Z",
+      "is_new": false,
+      "url": "/d/b0lugg0001-samsonite-freeform-hardside-spinner-large-checked",
+      "confirmed_at": "2026-10-11T14:40:00Z"
+    }
+  ],
+  "count": 1,
+  "generated_at": "2026-10-11T15:00:00Z",
+  "attribution": {
+    "text": "Data by Keepa",
+    "url": "https://keepa.com"
+  }
+}

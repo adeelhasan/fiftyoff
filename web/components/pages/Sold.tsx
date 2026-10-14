@@ -44,7 +44,7 @@ export default function Sold() {
           <h1 className="page-title">Still there</h1>
         </div>
         <p style={{ fontSize: 18 }}>This one is still listed on Amazon.</p>
-        <div className="grid three" style={{ maxWidth: 260, gridTemplateColumns: "minmax(0,1fr)" }}>
+        <div className="grid three" role="list" style={{ maxWidth: 260, gridTemplateColumns: "minmax(0,1fr)" }}>
           <DealCard d={d} shelfLabel={shelfName(d.shelf, shelves)} now={now} />
         </div>
       </section>
@@ -57,7 +57,6 @@ export default function Sold() {
   // How long it was up comes from the unit's sightings (up_for_*), not landed_at: we may have priced it long after
   // it was listed. When we found it already listed, we only know a lower bound.
   const up = g.up_for_min !== null && !g.up_for_is_lower_bound ? span(g.up_for_min) : null;
-  const over = g.up_for_min !== null && g.up_for_is_lower_bound ? span(g.up_for_min) : null;
   return (
     <section style={{ gap: 20 }}>
       <div className="sold">
@@ -71,7 +70,7 @@ export default function Sold() {
           <h1 className="h">{up ? `This one went ${up} after it was listed` : "This one has gone"}</h1>
           <div className="p">
             {g.title}, last price <span className="tnum">{money(g.last_price)}</span>, {g.pct_off}% off
-            {over ? `, after more than ${over} on sale` : ""}. We&apos;re still watching{" "}
+. We&apos;re still watching{" "}
             {shelf}.
           </div>
           <div style={{ marginTop: 4 }}>
@@ -89,7 +88,7 @@ export default function Sold() {
               </Link>
             </span>
           </div>
-          <div className="grid three">
+          <div className="grid three" role="list">
             {data.same_shelf.slice(0, 3).map((d) => (
               <DealCard key={d.id} d={d} now={now} />
             ))}
@@ -102,8 +101,9 @@ export default function Sold() {
 
 function Gone404() {
   return (
-    <Empty title="This one has gone" action={<Link className="btn btn-ink" href="/deals/">See all deals</Link>}>
-      We couldn&apos;t find that unit any more. It may have sold, or been withdrawn.
+    <Empty title="We can't find that deal" action={<Link className="btn btn-ink" href="/deals/">See all deals</Link>}>
+      It isn&apos;t one we&apos;ve listed in the last week, or the link is mistyped. Deals that went more than 7 days ago
+      drop off.
     </Empty>
   );
 }

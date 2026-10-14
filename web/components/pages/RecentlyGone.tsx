@@ -87,7 +87,7 @@ export default function RecentlyGone() {
                     {up ? ` · ${up}` : ""}
                   </span>
                   <button className="linkbtn" onClick={() => watch(shelf)}>
-                    Tell me when one lands
+                    Watch {shelf}
                   </button>
                 </div>
                 <div className="last">

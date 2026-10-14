@@ -1,3 +1,4 @@
+import { arm } from "./ab";
 import type { Deal, Shelf } from "./types";
 
 export const money = (n: number) =>
@@ -38,17 +39,25 @@ export function span(min: number): string {
   return years === 1 ? "a year" : `${years} years`;
 }
 
-/** "up for 15 h", or "up for over 4 months" when we found it already listed. */
+/** "up for 15 h" when we saw it land. When we found it already listed, the number is the listing's age, not the
+ * deal's (QA 10-12: "over a year" for a deal that lasted 20 minutes), so nothing is said. */
 export function upFor(min: number | null, lowerBound: boolean): string {
-  if (min === null) return "";
-  return `up for ${lowerBound ? "over " : ""}${span(min)}`;
+  if (min === null || lowerBound) return "";
+  return `up for ${span(min)}`;
 }
 
-/** "3 SIZES" for size-dependent variants, "2 UNITS" for several units; nothing for one. */
+/** "3 SIZES" / "2 VERSIONS" when the card groups variants (its price reads "from"); "2 AVAILABLE" for several units
+ * of the same thing; nothing for one (REPORT 12). */
 export function variantTag(d: Deal): string {
   if (d.variants > 1) return `${d.variants} ${d.fit ? "SIZES" : "VERSIONS"}`;
-  if (d.units > 1) return `${d.units} UNITS`;
+  if (d.units > 1) return `${d.units} AVAILABLE`;
   return "";
+}
+
+/** ["usually $129.99", "save $64.00"] (D36 allows the usual price for now). Empty without a usual price. */
+export function usualParts(d: Deal): string[] {
+  if (!d.usual_price || d.usual_price <= d.price) return [];
+  return [`usually ${money(d.usual_price)}`, `save ${money(d.usual_price - d.price)}`];
 }
 
 /** A shelf's display name from the shelves map, or the id made readable. */
@@ -56,5 +65,10 @@ export function shelfName(id: string, shelves: Map<string, Shelf> | null): strin
   return shelves?.get(id)?.name ?? id.replace(/-/g, " ").replace(/^./, (c) => c.toUpperCase());
 }
 
-/** A card's outbound link: our /d/ redirect, tagged so the click row records the web surface. */
-export const outLink = (d: Deal) => `${d.url}${d.url.includes("?") ? "&" : "?"}s=web`;
+/** A card's outbound link: our /d/ redirect, tagged with where on the site it was (`s`) and the A/B arm (`v`). */
+export function outLink(d: Deal, source = "web"): string {
+  const v = typeof window === "undefined" ? "" : arm();
+  return `${d.url}${d.url.includes("?") ? "&" : "?"}s=${source}${v ? `&v=${v}` : ""}`;
+}
+/** Links that leave for Amazon open in a new tab, so the feed stays where it was. */
+export const OUT = { target: "_blank", rel: "noopener" } as const;

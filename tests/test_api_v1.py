@@ -139,7 +139,8 @@ ALL = "/api/v1/deals?cond=like-new,very-good,good,acceptable&limit=200"
 ENDPOINTS = {"deals": "/api/v1/deals", "deals_filtered": "/api/v1/deals?aisle=gaming&sort=price-asc&since=2026-10-11T00:00:00Z&limit=2",
              "today": "/api/v1/today", "shelves": "/api/v1/shelves",
              "shelf": "/api/v1/shelves/gaming-gear", "gone": "/api/v1/gone?window=7d",
-             "product": "/api/v1/product/B0ESPR0001", "product_gone": "/api/v1/product/B0GONE0001"}
+             "product": "/api/v1/product/B0ESPR0001", "product_gone": "/api/v1/product/B0GONE0001",
+             "almost": "/api/v1/almost", "sizes": "/api/v1/sizes", "sized": "/api/v1/sized?letter=l,xl"}
 
 
 def test_responses_match_the_canonical_fixtures():
@@ -231,7 +232,7 @@ def test_out_link_redirects_and_logs_a_click():
     assert r.status_code == 302 and r.headers["location"] == "https://www.amazon.com/dp/B0C1234567?aod=1"
     assert r.headers["cache-control"] == "no-store"
     assert clicks[-1] == {"asin": "B0C1234567", "slug": "b0c1234567-thrustmaster-eswap-x-pro", "surface": "email",
-                          "live": True, "referer_path": "/shelf/gaming-gear/"}
+                          "live": True, "referer_path": "/shelf/gaming-gear/", "variant": None}
     r = c.get("/d/b0espr0002", headers=auth())  # a variant under a grouped card is live too
     assert r.headers["location"] == "https://www.amazon.com/dp/B0ESPR0002?aod=1" and clicks[-1]["surface"] is None
     r = c.get("/d/b0gone0001-delonghi?s=bogus", headers=auth())
@@ -346,3 +347,171 @@ def test_all_deals_filters_sorts_and_pages():
                                             ("", "b0x"), (None, "b0x")])
 def test_slug(title, expected):
     assert api_v1.slug("B0X", title) == expected
+
+
+def _fd(shelf="watches", pct=60, usual=200.0, cond="Like New", **kw):
+    d = {"id": "B0X", "shelf": shelf, "pct_off": pct, "usual_price": usual, "price": usual * (1 - pct / 100),
+         "condition": cond, "landed_at": "2026-10-11T00:00:00Z", "confirmed_at": api_v1._iso(NOW - timedelta(hours=1))}
+    return {**d, **kw}
+
+
+def _fp(brand="Timex", check=()):
+    return {"_rows": [{"brand": brand}], "check_reference": list(check)}
+
+
+def test_featured_rules_each_exclude_what_they_should():
+    """trust-first §1.2: one rule per pair; only the last pair passes everything."""
+    cases = [(_fp(), _fd(cond="Acceptable")), (_fp(), _fd(shelf="a", confirmed_at=api_v1._iso(NOW - timedelta(hours=13)))), (_fp(), _fd(shelf="b", pct=91)),
+             (_fp(), _fd(shelf="c", pct=45)), (_fp(brand=None), _fd(shelf="d")), (_fp(), _fd(shelf="e", usual=60.0)),
+             (_fp(check=["stale"]), _fd(shelf="f")), (_fp(), _fd(shelf=api_v1.UNSORTED)),
+             (_fp(), _fd(shelf="ok")), (_fp(), _fd(shelf="ok", id="B0Y"))]  # the second "ok" is a repeat shelf
+    got = api_v1.featured([p for p, _ in cases], [d for _, d in cases], NOW)
+    assert [(d["shelf"], d["id"]) for d in got] == [("ok", "B0X")]
+
+
+def test_shelf_rotation_is_deterministic_per_day_and_keeps_the_top():
+    order = [f"s{i}" for i in range(20)]
+    a, b = api_v1.rotate(order, "2026-10-13"), api_v1.rotate(order, "2026-10-13")
+    assert a == b and len(a) == api_v1.TODAY_SHELVES and a[:3] == ["s0", "s1", "s2"]
+    assert set(a) <= set(order[:api_v1.TODAY_POOL]) and a == sorted(a, key=order.index)  # score order kept
+    assert any(api_v1.rotate(order, f"2026-10-{d:02d}") != a for d in range(14, 20))  # other days differ
+    assert api_v1.rotate(order[:5], "2026-10-13") == order[:5]  # fewer shelves than rows: all of them
+
+
+def test_mixed_order_never_runs_more_than_two_from_one_shelf_when_it_can_avoid_it():
+    deals = [{"shelf": "faucets", "n": i} for i in range(6)] + [{"shelf": "watches", "n": 9}, {"shelf": "rugs", "n": 10}]
+    got = api_v1.mix(deals)
+    assert sorted(d["n"] for d in got) == sorted(d["n"] for d in deals)  # same cards
+    assert [d["shelf"] for d in got[:5]] == ["faucets", "faucets", "watches", "faucets", "faucets"]
+    assert got[5]["shelf"] == "rugs"  # then only faucets are left, and they follow
+
+
+def test_saved_and_mixed_sorts_are_accepted():
+    _, c = make()
+    saved = c.get("/api/v1/deals?sort=saved&cond=like-new,very-good,good,acceptable", headers=auth()).json()["deals"]
+    s = [(d["usual_price"] or d["price"]) - d["price"] for d in saved]
+    assert s == sorted(s, reverse=True)
+    assert c.get("/api/v1/deals?sort=mixed", headers=auth()).status_code == 200
+
+
+def test_new_click_sources_are_recorded():
+    clicks = []
+    _, c = make(clicks=clicks)
+    for s in ("featured", "share", "search", "almost", "ios", "bogus"):
+        c.get(f"/d/b0c1234567-x?s={s}", headers=auth())
+    assert [r["surface"] for r in clicks] == ["featured", "share", "search", "almost", "ios", None]
+
+
+def test_page_views_and_click_variants_keep_only_the_allowed_values():
+    views, clicks = [], []
+    _, c = make(clicks=clicks, log_view=lambda page, v: views.append((page, v)))
+    assert c.post("/api/v1/view?page=today&v=a", headers=auth()).status_code == 204
+    assert c.post("/api/v1/view?page=deals&v=zz", headers=auth()).status_code == 204
+    assert c.post("/api/v1/view?page=admin", headers=auth()).status_code == 422
+    assert views == [("today", "a"), ("deals", "")]
+    c.get("/d/b0c1234567-x?s=web&v=b", headers=auth())
+    c.get("/d/b0c1234567-x?s=web&v=q", headers=auth())
+    assert [r["variant"] for r in clicks] == ["b", None]
+
+
+def test_deal_page_writes_a_link_preview_for_live_and_gone_and_none_for_unknown(tmp_path):
+    """trust-first §4.2: /deal/{slug} serves the one exported page, with og: tags from the snapshot."""
+    (tmp_path / "deal").mkdir()
+    (tmp_path / "deal" / "index.html").write_text("<html><head><title>Deal · fiftyOff</title></head><body>x</body></html>")
+    _, c = make(tmp_path)
+    live = c.get("/deal/b0c1234567-thrustmaster-eswap", headers=auth()).text
+    assert 'og:title" content="51% off: Thrustmaster eSwap X Pro' in live and "usually $145.99" in live
+    assert "<title>51% off: Thrustmaster" in live and 'og:image" content="https://m.media-amazon.com' in live
+    gone = c.get("/deal/b0gone0001-delonghi", headers=auth()).text
+    assert 'og:description" content="Gone. Last price' in gone
+    unknown = c.get("/deal/b0nope0000-x", headers=auth()).text
+    assert "og:title" not in unknown and "<title>Deal · fiftyOff</title>" in unknown
+    evil = c.get("/deal/%3Cscript%3E", headers=auth())
+    assert evil.status_code == 200 and "<script>" not in evil.text
+
+
+def test_search_matches_word_prefixes_in_title_and_brand_and_lists_gone_matches():
+    """trust-first §4.1 / D54."""
+    assert api_v1.matches("sony wh", api_v1.words("Sony WH-1000XM5 Wireless"))
+    assert not api_v1.matches("sony xm6", api_v1.words("Sony WH-1000XM5 Wireless"))
+    assert api_v1.matches("timex", api_v1.words("Men's Citation watch", "Timex"))  # brand only
+    assert not api_v1.matches("  ", api_v1.words("anything")) and not api_v1.matches("on", api_v1.words(""))
+    _, c = make()
+    every = "&cond=like-new,very-good,good,acceptable"
+    r = c.get("/api/v1/deals?q=thrustmaster" + every, headers=auth()).json()
+    assert [d["id"] for d in r["deals"]] == ["B0C1234567"] and r["gone"] == [] and r["total"] > r["count"]
+    gone_title = c.get("/api/v1/gone?window=7d", headers=auth()).json()["gone"][0]["title"]
+    r = c.get("/api/v1/deals?q=" + gone_title.split()[0] + every, headers=auth()).json()
+    assert r["gone"] and all(gone_title.split()[0].lower() in g["title"].lower() for g in r["gone"])
+    r = c.get("/api/v1/deals?q=zzzznothing", headers=auth()).json()
+    assert r["count"] == 0 and r["deals"] == [] and r["gone"] == []
+    assert "gone" not in c.get("/api/v1/deals", headers=auth()).json()  # no query, no gone list
+
+
+def test_hide_aisles_removes_them():
+    _, c = make()
+    every = "/api/v1/deals?cond=like-new,very-good,good,acceptable&limit=200"
+    all_ = c.get(every, headers=auth()).json()["deals"]
+    hidden = c.get(every + "&hide=gaming,kitchen", headers=auth()).json()["deals"]
+    assert hidden and all(d["aisle"] not in ("gaming", "kitchen") for d in hidden)
+    assert len(hidden) == len([d for d in all_ if d["aisle"] not in ("gaming", "kitchen")])
+
+
+def _ap(strict, brand="Timex", score=6, cond="Used - Like New", seen_h=2, shelf="watches", check=()):
+    row = {"asin": "B0ALM00001", "title": "A watch", "image": None, "resale_cents": int(20000 * (1 - strict)),
+           "ref_cents": 20000, "strict": strict, "cond": cond, "brand": brand,
+           "last_confirmed_at": NOW - timedelta(hours=seen_h), "priced_at": NOW - timedelta(days=1)}
+    return {"_rows": [row], "shelf": shelf, "aisle": "fashion", "appeal": {"score": score, "fit": False},
+            "variants": 1, "unit_count": 1, "is_new": False, "check_reference": list(check), "delight": 1, "score": 1}
+
+
+def test_almost_page_never_shows_a_50_percent_or_unbranded_or_stale_unit():
+    """trust-first §4.4: each rule drops one card; only the last passes."""
+    cards = [_ap(0.55), _ap(0.45, brand=None), _ap(0.45, score=4), _ap(0.45, seen_h=30), _ap(0.45, cond="Used - Acceptable"),
+             _ap(0.45, check=["stale"]), _ap(0.45, shelf=api_v1.UNSORTED), _ap(0.42)]
+    got = api_v1.almost(cards, NOW)
+    assert [d["pct_off"] for d in got] == [42]
+
+
+def _card(asin_titles, shelf, fit=True, size=None, cond=LIKE_NEW):
+    rows = [_live(a, t, "x.jpg", cond, 5000, 12000, 2, parent="P" + asin_titles[0][0]) for a, t in asin_titles]
+    return {"_rows": rows, "shelf": shelf, "aisle": "fashion", "variants": len(rows), "unit_count": len(rows),
+            "is_new": False, "appeal": {"fit": fit, "size": size}, "delight": 1.0, "score": 5}
+
+
+def test_sizes_page_quotes_the_unit_in_your_size_and_counts_the_picker():
+    """D59: a coat in M and L, shoes in men's 10.5 and 9 Wide, a card with no readable size, one not size-dependent."""
+    coat = _card([("B0COAT000M", "Marmot Men's Fordham Jacket, Black, Medium"),
+                  ("B0COAT000L", "Marmot Men's Fordham Jacket, Black, Large")], "jackets-coats")
+    shoe = _card([("B0SHOE0105", "Cole Haan Men's Loafer, Burgundy, 10.5 M US"),
+                  ("B0SHOE0009", "Cole Haan Men's Loafer, Burgundy, 9 Wide")], "dress-shoes-heels")
+    blank = _card([("B0DRESS001", "Kasper Women's Sheath Dress, Black Multi")], "dresses")
+    lamp = _card([("B0LAMP0001", "Brass Table Lamp, Large")], "lamps", fit=False)
+    cards = [api_v1.attach_sizes(p) for p in (coat, shoe, blank, lamp)]
+    out = api_v1.sized_deals(cards, NOW, {"letter": {"L"}})
+    assert [(d["id"], d["size"]) for d in out["deals"]] == [("B0COAT000L", "L")]
+    out = api_v1.sized_deals(cards, NOW, {"shoe": {"men-9"}})
+    assert [(d["id"], d["size"]) for d in out["deals"]] == [("B0SHOE0009", "Men's 9 Wide")]
+    assert api_v1.sized_deals(cards, NOW, {})["count"] == 2           # no sizes given: every card with a readable size
+    assert api_v1.deal(lamp, NOW)["size"] is None                    # not size-dependent: no size, even with "Large"
+    f = {g["id"]: {v["v"]: v["n"] for v in g["values"]} for g in api_v1.size_facets(cards, NOW)["groups"]}
+    assert f["letter"] == {"M": 1, "L": 1} and f["shoe-men"] == {"9": 1, "10.5": 1}
+    assert api_v1.size_facets(cards, NOW)["unsized"] == 1
+
+
+@pytest.mark.parametrize("title,shelf,label", [
+    ("Levi's Men's 505 Regular Fit Jeans, Rinse, 34W x 32L", "jeans", "34×32"),
+    ("Propet Cliff Walker Tall Strap Black 9.5 XX (5E)", "sneakers-running-shoes", "9.5 Wide"),
+    ("Nine West Women's Pruce Heeled Sandal, Black Nappa, 5", "sandals-flats", "Women's 5"),
+    ("Adrianna Papell Women's One Shoulder Floral Gown, Blue Multi, 14", "dresses", "Size 14"),
+    ("Chillys Men's Micro-Elite Chamois Crewneck(Black, X-Large)", "tops-sweaters", "XL"),
+    ("Batting Helmet with Facemask - Team White, Large/X-Large", "baseball-softball", "L/XL"),
+    ("Stride Rite Unisex M2P Journey 3.0 (Toddler) Silver Sparkle 6.5 Wide", "sneakers-running-shoes", "Kids 6.5 Wide"),
+    ("Kasper Women's Sheath Dress W/Waistband Frame, Black Multi", "dresses", None),
+    ("Merrell Trail Glove 8 White", "sneakers-running-shoes", None),
+    ("Cole Haan Men's Pinch Tassel Loafer, Burgundy, 8 E US", "dress-shoes-heels", "Men's 8"),
+])
+def test_size_parser(title, shelf, label):
+    from fiftyoff.sizes import parse
+    z = parse(title, shelf)
+    assert (z["label"] if z else None) == label

@@ -1,0 +1,51 @@
+{
+  "groups": [
+    {
+      "id": "letter",
+      "name": "S, M, L sizes",
+      "values": [
+        {
+          "v": "L",
+          "n": 1
+        }
+      ]
+    },
+    {
+      "id": "num",
+      "name": "Numbered sizes",
+      "values": []
+    },
+    {
+      "id": "waist",
+      "name": "Waist",
+      "values": []
+    },
+    {
+      "id": "length",
+      "name": "Inseam",
+      "values": []
+    },
+    {
+      "id": "shoe-men",
+      "name": "Men's shoes",
+      "values": []
+    },
+    {
+      "id": "shoe-women",
+      "name": "Women's shoes",
+      "values": []
+    },
+    {
+      "id": "shoe-kids",
+      "name": "Kids' shoes",
+      "values": []
+    }
+  ],
+  "sized": 1,
+  "unsized": 0,
+  "generated_at": "2026-10-11T15:00:00Z",
+  "attribution": {
+    "text": "Data by Keepa",
+    "url": "https://keepa.com"
+  }
+}

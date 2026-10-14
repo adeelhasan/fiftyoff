@@ -34,8 +34,13 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
       <body>
         <WatchProvider>
           <div className="shell">
+            <a className="skip" href="#main">
+              Skip to deals
+            </a>
             <Header />
-            <main className="wrap">{children}</main>
+            <main className="wrap" id="main" tabIndex={-1}>
+              {children}
+            </main>
             <Footer />
           </div>
         </WatchProvider>

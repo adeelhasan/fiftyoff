@@ -20,6 +20,10 @@ Resale offer against a **strict reference**: the lowest of Amazon's price, the N
 | `fiftyoff/api.py` `/api/shelves` | Shelves view: our own browsing categories, each product placed on a shelf by a model's appeal rating (stored once per product, with the model and rubric version) |
 | `notify.py`, `fiftyoff/notify.py` | Experimental new-deal alerts: the tracker records new and returning units in an outbox table, a notifier matches them to watched shelves with deterministic rules, waits out each tier's delay, re-checks the deal is still live and sends one email per address |
 | `scripts/rate_local.py` | Rates newly seen products (appeal, shelf) with a model, outside the tracker; every output line is validated before it's stored |
+| `rater.py`, `fiftyoff/rater.py` | The API rater: rates new products' appeal and shelf with Claude on a schedule (prompt-cached rubric, monthly dollar cap); never called by the tracker |
+| `fiftyoff/sizes.py` | Sizes for clothes and shoes, read deterministically from each Resale unit's title (letter, numbered, waist × inseam, shoe size with wearer and width); feeds the "By size" page |
+| `scripts/brand_probe.py` | One-off probe: Keepa's deal feed filtered by brand, to measure how much well-known-brand supply exists at 50%+ |
+| `web/` | The website (Next.js static export): Today, All deals, shelves, recently gone, almost half off, and By size, which asks for your sizes once and keeps them on your device |
 | `fiftyoff/` | Keepa client (raw response saved before parsing, token ledger, hard token caps), strict-discount and episode analysis |
 
 How the tracker decides a unit is gone: Amazon often hides a Resale unit for a while and then shows

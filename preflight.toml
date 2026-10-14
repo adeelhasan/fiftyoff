@@ -136,6 +136,7 @@ unconfirmed_minutes = 30        # a unit missing from the last check
 slow_minutes = 1440            # D43: settled listings once a day (was 720, D32); a price change re-floats them in the sweep for free
 census_enabled = true          # D32: sweep-only census of other root categories (fiftyoff/tracker.py CENSUS_CATS)
 census_minutes = 2             # D32: one census page (5 tokens) every 2 min, <= 2.5 tokens/min
+no_check_aisles = ["diy"]      # D58: rated DIY (faucets, hardware, plumbing, tools...) is seen-only: no paid checks
 
 [admin]
 # D36: tags an admin can put on a deal (featured strip, newsletter set...). /admin/.
@@ -161,3 +162,19 @@ max_interests = 1               # shown in `notify.py list`, not enforced while 
 [tiers.plus]
 delay_minutes = 0
 max_interests = 5
+
+[rater]
+# The API rater (fiftyoff/rater.py, `rater.py run`, compose profile "rater"): rates new products with the Anthropic API
+# on the key in .env (ANTHROPIC_API_KEY; the Max plan's monthly API credits). Never called by the tracker (rule 7).
+model_id = "claude-sonnet-5-5"  # the exact model; ratings are stored as model "sonnet", like the other backends
+effort = "low"                  # output_config.effort; the supervised run checks agreement before raising it
+batch = 60                      # products per call
+max_tokens = 16000
+interval_minutes = 15           # run batches until none is full, at most max_batches, then wait
+max_batches = 8
+monthly_usd_cap = 25.0          # stop calling once this month's recorded spend reaches this (UTC calendar month)
+# USD per million tokens (Sonnet 5.5; cache writes at 1.25x input for the 5-minute cache)
+price_input = 2.00
+price_output = 10.00
+price_cache_read = 0.20
+price_cache_write = 4.00         # 1-hour cache writes (2x input); the rubric is cached for an hour, batches are 15 min apart

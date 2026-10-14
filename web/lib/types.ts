@@ -19,9 +19,11 @@ export interface Deal {
   variants: number;
   units: number;
   fit: boolean; // depends on size
+  size: string | null; // D59: the quoted unit's size ("M", "Men's 10.5 Wide", "32×30"), on size-dependent cards
   landed_at: string | null; // ISO, when we first priced it
   is_new: boolean;
   url: string; // always our /d/{slug}, never Amazon directly
+  confirmed_at: string | null; // ISO, our (or Keepa's feed's) last sighting of the quoted unit
 }
 
 export interface Gone extends Deal {
@@ -58,11 +60,13 @@ export interface DealsResponse {
   total: number; // every live public deal
   new_count: number | null; // cards that landed after `since` (they come first); null without `since`
   aisles: AisleCount[]; // counts under every filter except the aisle
+  gone?: Gone[]; // with a search (q): matching deals that went in the last 7 days (D54)
   generated_at: string;
   attribution: Attribution;
 }
 
 export interface TodayResponse {
+  featured: Deal[]; // trust-first §1.2: picked by rules and appeal, one per shelf
   just_in: Deal[];
   last_landed_at: string | null;
   aisles: AisleCount[];
@@ -79,6 +83,10 @@ export interface ShelfResponse {
   deals: Deal[];
 }
 
+export interface AlmostResponse {
+  deals: Deal[]; // trust-first §4.4: under 50%, branded, well rated, seen within a day
+}
+
 export interface GoneResponse {
   gone: Gone[];
   count: number;
@@ -92,7 +100,7 @@ export interface ProductResponse {
 
 export type CondId = "like-new" | "very-good" | "good" | "acceptable";
 export type PriceBand = "any" | "under-100" | "100-300" | "300-plus";
-export type Sort = "newest" | "discount" | "price-asc" | "price-desc";
+export type Sort = "mixed" | "newest" | "discount" | "price-asc" | "price-desc" | "saved";
 export type GoneWindow = "24h" | "3d" | "7d";
 
 export interface DealsQuery {
@@ -104,4 +112,31 @@ export interface DealsQuery {
   since?: string;
   limit?: number;
   offset?: number;
+  q?: string; // search: title and brand words
+  hide?: string[]; // aisles to leave out
+}
+
+/** D59: the size picker. Groups: letter, num, waist, length, shoe-men, shoe-women, shoe-kids. n = cards. */
+export interface SizesResponse {
+  groups: { id: string; name: string; values: { v: string; n: number }[] }[];
+  sized: number; // size-dependent cards with a readable size
+  unsized: number; // size-dependent cards whose size we can't read
+  generated_at: string;
+  attribution: Attribution;
+}
+
+/** D59: the visitor's sizes, kept on their device. Shoes are "men-10.5", "women-8", "kids-3". */
+export interface MySizes {
+  letter: string[];
+  num: string[];
+  waist: string[];
+  length: string[];
+  shoe: string[];
+}
+
+export interface SizedResponse {
+  deals: Deal[];
+  count: number;
+  generated_at: string;
+  attribution: Attribution;
 }

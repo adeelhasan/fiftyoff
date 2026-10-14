@@ -203,10 +203,25 @@ CREATE TABLE IF NOT EXISTS cat_node (
 CREATE INDEX IF NOT EXISTS sweep_rows_swept ON sweep_rows (swept_at);
 CREATE INDEX IF NOT EXISTS census_rows_swept ON census_rows (swept_at);
 
+-- D57: Clothing subtrees where Very Good also qualifies (watches, jewelry, bags, luggage: not worn clothes).
+-- Leaf ids reach a subtree through cat_node's parent chain (D39 lookups name parents too); an unnamed leaf
+-- falls back to the Like New rule until the tracker names it.
+CREATE OR REPLACE VIEW census_vg_node AS
+WITH RECURSIVE t(id, ok) AS (
+  SELECT id, name = ANY(ARRAY['Jewelry', 'Watches', 'Handbags & Wallets', 'Luggage & Travel Gear',
+                              'Wallets, Card Cases & Money Organizers'])
+  FROM cat_node WHERE parent_id = 7141123011
+  UNION ALL
+  SELECT n.id, t.ok OR n.name = ANY(ARRAY['Jewelry', 'Watches', 'Handbags & Wallets', 'Luggage & Travel Gear',
+                                          'Wallets, Card Cases & Money Organizers'])
+  FROM cat_node n JOIN t ON n.parent_id = t.id)
+SELECT id FROM t WHERE ok;
+
 -- D39 seen-in-feed layer: each ASIN's LATEST feed sighting in 7 days, kept only if that sighting is still a
 -- deal. Seen in Keepa's deal feed at swept_at, never live-checked (the API drops ASINs it live-checks, and
 -- shows a 36 h window by default, 7 days in "Seen only"). Shaped like deal_internal, plus parent, leaf
--- subcategories and reference flags. Holds don't apply here (the flags show on the card); hidden does (D36).
+-- subcategories and reference flags. Hidden applies here (D36). Holds and our own gone units are columns (`held`,
+-- `units_gone_at`): admin still sees the rows, the public selection drops them (beta QA 10-12).
 -- Census (D33/D38): its own qualification (rank limit per category, Like New clothing).
 CREATE OR REPLACE VIEW census_deal AS
 WITH c AS (SELECT DISTINCT ON (asin) * FROM census_rows WHERE swept_at > now() - interval '7 days'
@@ -214,18 +229,24 @@ WITH c AS (SELECT DISTINCT ON (asin) * FROM census_rows WHERE swept_at > now() -
 SELECT c.asin, NULL::bigint AS offer_id, c.title, c.category, c.image, c.cond, c.resale_cents, c.ref_cents,
        c.strict, c.swept_at AS last_confirmed_at, false AS unconfirmed,
        NULL::timestamptz AS keepa_first_seen_at, NULL::timestamptz AS first_seen_at,
-       NULL::text AS brand, NULL::text[] AS cat_path, NULL::int AS reviews, NULL::real AS rating,
+       (SELECT p.brand FROM product p WHERE p.asin = c.asin) AS brand,  -- trust-first: the featured row needs one
+       NULL::text[] AS cat_path, NULL::int AS reviews, NULL::real AS rating,
        c.drops30, NULL::int AS monthly_sold, NULL::bool AS amazon_sells, c.rank,
        to_timestamp((c.creation_kmin + 21564000) * 60.0) AS priced_at, c.cat_id,
        c.parent_asin, c.cats, c.ref_flags,
-       ((c.strict >= 0.40 AND c.ref_cents >= 10000) OR (c.strict >= 0.30 AND c.ref_cents >= 20000)) AS in_tiers
+       ((c.strict >= 0.40 AND c.ref_cents >= 10000) OR (c.strict >= 0.30 AND c.ref_cents >= 20000)) AS in_tiers,
+       EXISTS (SELECT 1 FROM unlisted x WHERE x.asin = c.asin) AS held,  -- QA 10-12: the public feed drops these
+       (SELECT max(v.gone_at) FROM units v WHERE v.asin = c.asin AND v.state = 'gone'
+        AND NOT EXISTS (SELECT 1 FROM units l WHERE l.asin = c.asin AND l.state <> 'gone')) AS units_gone_at
 FROM c
 -- D39 (10-06): seeing has no rank limit here either (Clothing had 486 Like New 50%+ deals in a week, 22 within
--- 50k). Tiers mirror TrackerConfig.tiers; the Clothing condition rule mirrors CENSUS_CONDS (D38).
+-- 50k). Tiers mirror TrackerConfig.tiers; the Clothing condition rule mirrors CENSUS_CONDS (D38),
+-- widened to Very Good in census_vg_node (D57).
 -- D46: plus 50%+ from a $40 reference for the shelves page; the main feed keeps `in_tiers` rows only.
 WHERE ((c.strict >= 0.40 AND c.ref_cents >= 10000) OR (c.strict >= 0.30 AND c.ref_cents >= 20000)
        OR (c.strict >= 0.50 AND c.ref_cents >= 4000))
-  AND (c.cat_id <> 7141123011 OR c.cond = 'Used - Like New')
+  AND (c.cat_id <> 7141123011 OR c.cond = 'Used - Like New'
+       OR (c.cond = 'Used - Very Good' AND c.cats && ARRAY(SELECT id FROM census_vg_node)))  -- D57
   AND NOT EXISTS (SELECT 1 FROM curation x WHERE x.asin = c.asin AND x.visibility = 'hidden');
 
 -- Tracked roots: the deal tiers with NO rank limit (D39: depth). Tiers mirror TrackerConfig.tiers.
@@ -235,11 +256,15 @@ WITH s AS (SELECT DISTINCT ON (asin) * FROM sweep_rows WHERE swept_at > now() - 
 SELECT s.asin, NULL::bigint AS offer_id, s.title, s.category, s.image, s.cond, s.resale_cents, s.ref_cents,
        s.strict, s.swept_at AS last_confirmed_at, false AS unconfirmed,
        NULL::timestamptz AS keepa_first_seen_at, NULL::timestamptz AS first_seen_at,
-       NULL::text AS brand, NULL::text[] AS cat_path, NULL::int AS reviews, NULL::real AS rating,
+       (SELECT p.brand FROM product p WHERE p.asin = s.asin) AS brand,  -- trust-first: the featured row needs one
+       NULL::text[] AS cat_path, NULL::int AS reviews, NULL::real AS rating,
        s.drops30, NULL::int AS monthly_sold, NULL::bool AS amazon_sells, s.rank,
        to_timestamp((s.creation_kmin + 21564000) * 60.0) AS priced_at, NULL::bigint AS cat_id,
        s.parent_asin, s.cats, s.ref_flags,
-       ((s.strict >= 0.40 AND s.ref_cents >= 10000) OR (s.strict >= 0.30 AND s.ref_cents >= 20000)) AS in_tiers
+       ((s.strict >= 0.40 AND s.ref_cents >= 10000) OR (s.strict >= 0.30 AND s.ref_cents >= 20000)) AS in_tiers,
+       EXISTS (SELECT 1 FROM unlisted x WHERE x.asin = s.asin) AS held,  -- QA 10-12: the public feed drops these
+       (SELECT max(v.gone_at) FROM units v WHERE v.asin = s.asin AND v.state = 'gone'
+        AND NOT EXISTS (SELECT 1 FROM units l WHERE l.asin = s.asin AND l.state <> 'gone')) AS units_gone_at
 FROM s
 -- D46: plus 50%+ from a $40 reference for the shelves page; the main feed keeps `in_tiers` rows only.
 WHERE ((s.strict >= 0.40 AND s.ref_cents >= 10000) OR (s.strict >= 0.30 AND s.ref_cents >= 20000)
@@ -367,6 +392,13 @@ CREATE TABLE IF NOT EXISTS click (
   live boolean, referer_path text
 );
 CREATE INDEX IF NOT EXISTS click_at ON click (at);
+-- trust-first measure: the A/B arm the device was in (tagline), and page views per day as bare counts (no IP, no
+-- cookie, no id), so clicks per visit can be compared by arm.
+ALTER TABLE click ADD COLUMN IF NOT EXISTS variant text;
+CREATE TABLE IF NOT EXISTS page_view (
+  day date NOT NULL, page text NOT NULL, variant text NOT NULL DEFAULT '', n int NOT NULL DEFAULT 0,
+  PRIMARY KEY (day, page, variant)
+);
 -- api-v1 per_week: product keys (parent ASIN, else ASIN) that newly qualified for the public selection (50%+ from
 -- a $40 reference) in the last 7 days: units we first saw, and feed/census rows Keepa priced, in that window.
 -- The API places each key on its shelf. Census keeps its Clothing condition rule (CENSUS_CONDS, D38).
@@ -381,7 +413,15 @@ UNION
 SELECT coalesce(parent_asin, asin) FROM census_rows
 WHERE swept_at > now() - interval '7 days' AND strict >= 0.5 AND ref_cents >= 4000
   AND to_timestamp((creation_kmin + 21564000) * 60.0) > now() - interval '7 days'
-  AND (cat_id <> 7141123011 OR cond = 'Used - Like New');
+  AND (cat_id <> 7141123011 OR cond = 'Used - Like New'
+       OR (cond = 'Used - Very Good' AND cats && ARRAY(SELECT id FROM census_vg_node)));  -- D57
+-- The API rater (fiftyoff/rater.py, 2026-10-12): one row per paid model call, so spend is known (rule 5's spirit)
+-- and the monthly cap can be enforced. Ratings themselves go to `appeal` (model 'sonnet', rated_by 'api').
+CREATE TABLE IF NOT EXISTS rater_batch (
+  id bigserial PRIMARY KEY, at timestamptz NOT NULL, model_id text NOT NULL, prompt_v text NOT NULL, effort text,
+  sent int NOT NULL, loaded int NOT NULL, bad int NOT NULL, stop_reason text, request_id text,
+  input_tokens int, output_tokens int, cache_read_tokens int, cache_write_tokens int, usd numeric(10, 4), error text
+);
 """
 
 
@@ -423,6 +463,13 @@ class PgStore:
     def put_state(self, key, value):
         self.conn.execute("INSERT INTO tracker_state VALUES (%s, %s) ON CONFLICT (key) DO UPDATE SET value = "
                           "EXCLUDED.value", (key, json.dumps(value)))
+
+    def no_check_keys(self, aisles):
+        """D58: product keys whose shelf (as the API resolves it: the rater's shelf, else its kind's) is in `aisles`."""
+        return {r[0] for r in self.conn.execute(
+            "SELECT a.key FROM appeal a LEFT JOIN shelf s1 ON s1.id = a.shelf LEFT JOIN kind_map m ON m.kind = a.kind "
+            "LEFT JOIN shelf s2 ON s2.id = m.shelf WHERE a.model = 'sonnet' AND coalesce(s1.aisle, s2.aisle) = ANY(%s)",
+            (list(aisles),))}
 
     def save_watch(self, w: Watch):
         self.conn.execute(

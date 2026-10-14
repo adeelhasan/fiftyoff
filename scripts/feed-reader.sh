@@ -37,5 +37,7 @@ GRANT SELECT ON shelf_watchers TO feed_reader;
 GRANT INSERT ON click TO feed_reader;
 GRANT USAGE ON SEQUENCE click_id_seq TO feed_reader;
 GRANT SELECT ON arrival_7d TO feed_reader;
+-- trust-first: page-view counts per day, page and A/B arm (upsert)
+GRANT SELECT, INSERT, UPDATE ON page_view TO feed_reader;
 SQL
 echo "feed_reader: SELECT on the feed, gone, status and admin views; INSERT/UPDATE on curation and app_user, INSERT on their logs and click"

@@ -15,9 +15,11 @@
     "variants": 1,
     "units": 1,
     "fit": false,
+    "size": null,
     "landed_at": "2026-10-11T00:00:00Z",
     "is_new": false,
     "url": "/d/b0gone0001-de-longhi-dedica-espresso-machine",
+    "confirmed_at": "2026-10-11T06:00:00Z",
     "gone_at": "2026-10-11T12:00:00Z",
     "last_price": 119.99,
     "up_for_min": 300,
@@ -39,9 +41,11 @@
       "variants": 2,
       "units": 2,
       "fit": false,
+      "size": null,
       "landed_at": "2026-10-11T09:00:00Z",
       "is_new": true,
-      "url": "/d/b0espr0002-breville-barista-express-espresso-machine-black"
+      "url": "/d/b0espr0002-breville-barista-express-espresso-machine-black",
+      "confirmed_at": "2026-10-11T14:40:00Z"
     }
   ],
   "attribution": {

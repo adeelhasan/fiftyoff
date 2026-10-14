@@ -17,7 +17,6 @@ on the VPS) comes later.
 from __future__ import annotations
 
 import argparse
-import re
 import subprocess
 import sys
 import time
@@ -25,32 +24,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from fiftyoff.appeal import RUBRIC, parse_lines, upsert_script  # noqa: E402
+from fiftyoff.appeal import CANDIDATES_SQL, parse_lines, prompt, rubric_version, upsert_script  # noqa: E402
 
 PSQL = "cd fiftyoff-app && docker compose exec -T db psql -U fiftyoff -d fiftyoff -v ON_ERROR_STOP=1 -q"
 OUT = Path("research/appeal/local")
 MODEL = "sonnet"
 
-CANDIDATES = """
-COPY (WITH d AS (
-  -- 0: an alert is waiting on the rating; 1: a headline 50%+ deal in any layer (live, sweep, census), newest
-  -- price first so fresh deals reach their shelf soonest (D48); 2: other active watches (D47 decides their checks)
-  SELECT w.asin, w.parent_asin, w.title, w.category, NULL AS brand, NULL::text[] AS cat_path, now() AS priced_at, 0 AS pri
-    FROM deal_event e JOIN watch w USING (asin) WHERE e.status IN ('new', 'waiting')
-  UNION ALL SELECT asin, parent_asin, title, category, brand, cat_path, priced_at, 1 FROM deal_internal WHERE strict >= 0.5
-  UNION ALL SELECT asin, parent_asin, title, category, brand, cat_path, priced_at, 1 FROM sweep_deal WHERE strict >= 0.5
-  UNION ALL SELECT asin, parent_asin, title, category, brand, cat_path, priced_at, 1 FROM census_deal WHERE strict >= 0.5
-  UNION ALL SELECT asin, parent_asin, title, category, NULL, NULL, added_at, 2 FROM watch WHERE retired_at IS NULL),
-k AS (SELECT DISTINCT ON (coalesce(parent_asin, asin)) coalesce(parent_asin, asin) AS key, asin, title, category,
-        brand, cat_path, priced_at, pri
-      FROM d WHERE title IS NOT NULL ORDER BY coalesce(parent_asin, asin), pri, priced_at DESC NULLS LAST)
-SELECT k.key, regexp_replace(k.title, '[\\t\\n\\r]+', ' ', 'g'),
-       regexp_replace(coalesce(k.brand, p.brand, ''), '[\\t\\n\\r]+', ' ', 'g'),
-       regexp_replace(coalesce(array_to_string(coalesce(k.cat_path, p.cat_path), ' > '), k.category, ''), '[\\t\\n\\r]+', ' ', 'g')
-FROM k LEFT JOIN product p ON p.asin = k.asin
-WHERE NOT EXISTS (SELECT 1 FROM appeal a WHERE a.key IN (k.key, k.asin) AND a.model = 'sonnet')
-ORDER BY k.pri, k.priced_at DESC NULLS LAST LIMIT {limit}) TO STDOUT;
-"""
+CANDIDATES = "COPY (" + CANDIDATES_SQL + ") TO STDOUT;"
+
 
 
 def ssh_psql(script: str) -> str:
@@ -58,18 +39,6 @@ def ssh_psql(script: str) -> str:
     if out.returncode:
         raise SystemExit(out.stderr)
     return out.stdout
-
-
-def rubric_version() -> str:
-    m = re.search(r"#\s*Appeal rubric (a\d+\.\d+)", RUBRIC.read_text())
-    if not m:
-        raise SystemExit("can't read the rubric version from fiftyoff/appeal_rubric.md")
-    return m.group(1)
-
-
-def prompt(lines: list[str]) -> str:
-    return (RUBRIC.read_text() + "\n\n## Products\n\nOne per line: `key<TAB>title<TAB>brand<TAB>category path`. "
-            "Rate every one, in input order, and output only the tab-separated lines.\n\n" + "\n".join(lines) + "\n")
 
 
 def batch(limit: int, dry: bool) -> int:

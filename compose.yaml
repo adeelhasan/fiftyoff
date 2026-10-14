@@ -7,6 +7,7 @@
 #   docker compose --profile tracker up -d tracker         # start the long-running tracker
 #   docker compose up -d api                               # read-only feed API + preview on 127.0.0.1:8000
 #   docker compose up -d notifier                         # new-deal emails to watchers (notify.py)
+#   docker compose --profile rater up -d rater             # the API rater (rater.py; needs ANTHROPIC_API_KEY in .env)
 #   docker compose up -d tunnel                            # https://preview.fiftyoff.app (named Cloudflare tunnel)
 #   docker compose --profile preview up -d preview-tunnel  # old temporary *.trycloudflare.com URL (retired)
 # `app` and `tracker` sit in profiles, so a plain `up` never starts them. The tracker spends nothing
@@ -98,6 +99,25 @@ services:
     image: fiftyoff:latest
     command: ["notify.py", "run"]
     restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: postgresql://fiftyoff:${POSTGRES_PASSWORD:-fiftyoff-dev}@db:5432/fiftyoff
+    volumes:
+      - ./preflight.toml:/app/preflight.toml:ro
+    depends_on:
+      db:
+        condition: service_healthy
+
+  # The API rater (rater.py, fiftyoff/rater.py): rates new products for the shelves and alerts with the Anthropic API,
+  # on the Max plan's monthly API credits (ANTHROPIC_API_KEY in .env). In a profile, so it starts only when asked.
+  # No Keepa calls; never decides prices or availability (rule 7). Spend is capped in preflight.toml [rater].
+  rater:
+    image: fiftyoff:latest
+    profiles: ["rater"]
+    command: ["rater.py", "run"]
+    restart: on-failure   # without a key it exits 0 and stays down; a crash restarts it
     env_file:
       - path: .env
         required: false

@@ -27,6 +27,7 @@ CHECK_FORMULA_VERSION = "d0.2"  # strict ref at a check: min of Amazon/New now, 
 QUALIFY_VERSION = "q0.4"      # what sweep_rows.qualifies means: q0.1 tiers + rank 50k; q0.2 D38 census rules;
                               # q0.3 D40: watched = tiers + rank and >= watch_min_strict, or the deep band (drops30)
                               # q0.4 D41: as q0.3 with max_rank from config (0 = no rank limit for live checks)
+                              # (D58: qualifying rows of no-check aisles are still marked qualifies; they just get no watch)
 UNIT_ALGO_VERSION = "u0.2"      # unit states + lifespan bounds + confidence, below (u0.2: Keepa-bracketed starts)
 
 TARGET_CATS = [172282, 1055398, 2619525011, 228013, 3375251]  # Electronics, H&K, Appliances, Tools, Sports
@@ -40,7 +41,8 @@ CENSUS_CATS = [165793011, 3760911, 3760901, 1064954, 165796011, 2619533011, 2972
 # limit hid nearly all of them; worn clothing has little appeal, so clothing qualifies only Like New.
 CENSUS_MAX_RANK = {165793011: 300000}
 CENSUS_DEFAULT_RANK = 50000  # D41: the census keeps its own rank rule when the tracker's max_rank is lifted
-CENSUS_CONDS = {7141123011: ("Used - Like New",)}
+CENSUS_CONDS = {7141123011: ("Used - Like New",)}  # D57: the feed views also take Very Good watches, jewelry,
+                                                     # bags and luggage (census_vg_node); `qualifies` here stays strict
 # D39: subcategory names. Feed rows carry leaf node ids (`categories`); checks bring `categoryTree` for free,
 # the rest are named by Keepa's category lookup (parents included), a few ids per call.
 CAT_LOOKUP_BATCH = 10
@@ -92,6 +94,7 @@ class TrackerConfig:
     census_cats: list[int] = field(default_factory=lambda: list(CENSUS_CATS))
     cat_lookup_minutes: float = 1        # D39: at most one category lookup (~1 token) per minute
     headline: float = 0.50              # D30: only new units at this strict discount get the fast cadence
+    no_check_aisles: list[str] = field(default_factory=list)  # D58: rated into these aisles -> seen-only, no paid checks
     retry_minutes: int = 5              # D30: a failed check (0 tokens) is retried soon, doubling per failure
 
     @classmethod
@@ -264,6 +267,7 @@ class Store(Protocol):
     def known_cats(self) -> set[int]: ...
     def unnamed_cats(self) -> list[int]: ...
     def save_cat_nodes(self, t: float, nodes: list[tuple[int, str | None, int | None]]) -> None: ...
+    def no_check_keys(self, aisles: list[str]) -> set[str]: ...  # D58: product keys the rater placed in these aisles
 
 
 class MemoryStore:
@@ -280,6 +284,7 @@ class MemoryStore:
         self.reviews: dict[str, dict] = {}
         self.cat_nodes: dict[int, tuple[str | None, int | None]] = {}
         self.events: list[tuple[str, str, int, float]] = []  # (kind, asin, offer_id, at)
+        self.aisles: dict[str, str] = {}  # product key -> aisle, as the rater placed it
 
     def known_cats(self):
         return set(self.cat_nodes)
@@ -290,6 +295,9 @@ class MemoryStore:
     def save_cat_nodes(self, t, nodes):
         for cid, name, parent in nodes:
             self.cat_nodes[cid] = (name, parent)
+
+    def no_check_keys(self, aisles):
+        return {k for k, a in self.aisles.items() if a in aisles}
 
     def load(self):
         return dict(self.watch), dict(self.units), dict(self.state)
@@ -362,6 +370,20 @@ class Tracker:
         self.cat_queue: list[int] = store.unnamed_cats()  # backfilled rows' ids, most useful first
         self.known_cats |= set(self.cat_queue)
         self.last_cat_lookup = 0.0
+        self.no_check: set[str] = self._no_check_keys()
+
+    def _no_check_keys(self) -> set[str]:
+        if not self.cfg.no_check_aisles:
+            return set()
+        try:
+            return self.store.no_check_keys(self.cfg.no_check_aisles)
+        except Exception as e:  # noqa: BLE001 — a failed read keeps the last set; it must never stop the tracker
+            self.log(f"  no-check keys not refreshed ({e!r})")
+            return getattr(self, "no_check", set())
+
+    def _seen_only(self, asin: str, parent: str | None) -> bool:
+        """D58: the rater placed this product in a no-check aisle (DIY): the feed sees it, nobody pays to check it."""
+        return asin in self.no_check or (parent or asin) in self.no_check
 
     # ---- sweeps
 
@@ -369,6 +391,7 @@ class Tracker:
         """Page the deal feed newest-first, all target categories in one query, until a page reaches deals
         created before the previous sweep (minus a 60 min margin). The deep sweep (below) reaches the rest."""
         t = self.clock()
+        self.no_check = self._no_check_keys()  # new ratings land between sweeps
         cutoff = unix_to_keepa(self.last_sweep - HOUR) if self.last_sweep else None
         n_rows = pages = 0
         for page in range(self.cfg.max_pages):
@@ -488,7 +511,7 @@ class Tracker:
             or (self.cfg.deep_watch_min_drops30 > 0 and (r.strict or 0) >= self.cfg.headline
                 and qualifies(r.strict, r.strict_ref_cents, None, self.cfg)
                 and (drops or 0) >= self.cfg.deep_watch_min_drops30)
-        if ok:
+        if ok and not self._seen_only(r.asin, r.parent):
             self._watch(r, rank, d.get("image"), d.get("creationDate"), t)
         return {"asin": r.asin, "parent": r.parent, "cat": r.root_cat, "title": r.title,
                 "resale": r.warehouse_cents, "ref": r.strict_ref_cents, "strict": r.strict,
@@ -570,6 +593,10 @@ class Tracker:
         best, best_key = None, None
         for w in self.watch.values():
             if w.retired is not None:
+                continue
+            if self._seen_only(w.asin, w.parent):  # D58: rated into a no-check aisle after it was watched
+                w.retired = t
+                self.store.save_watch(w)
                 continue
             iv = self.interval(w, t)
             ratio = (t - w.last_check) / iv

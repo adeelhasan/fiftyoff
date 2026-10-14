@@ -110,6 +110,24 @@ def test_sweep_watches_qualifying_and_stops_incrementally(rig):
     assert tr.sweep() == 1                       # incremental: page 0 already older than last sweep - 1 h
 
 
+def test_no_check_aisle_is_seen_only(rig):
+    """D58: a product the rater placed in a no-check aisle (DIY) is recorded by the sweep but never watched; one
+    rated into it after it was watched is retired at its next turn instead of checked."""
+    clock, script, store, tr, _ = rig
+    tr.cfg.no_check_aisles = ["diy"]
+    store.aisles = {"FAUCET": "diy", "TV": "tech"}
+    now_k = unix_to_keepa(T0)
+    script.pages = [[deal("FAUCET", 9000, 20000, now_k), deal("TV", 9000, 20000, now_k), deal("LATER", 9000, 20000, now_k)]]
+    tr.sweep()
+    assert {r["asin"]: r["qualifies"] for r in store.sweep_rows} == {"FAUCET": True, "TV": True, "LATER": True}
+    assert set(tr.watch) == {"TV", "LATER"}
+    store.aisles["LATER"] = "diy"
+    tr.no_check = tr._no_check_keys()
+    clock.t += 60
+    assert tr.next_check(clock.t) == "TV"
+    assert tr.watch["LATER"].retired is not None
+
+
 def test_unit_lifecycle_unconfirmed_return_gone_revive(rig):
     clock, script, store, tr, _ = rig
     script.pages = [[deal("A", 9000, 20000, unix_to_keepa(T0))]]

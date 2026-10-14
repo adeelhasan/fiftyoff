@@ -15,9 +15,11 @@
       "variants": 1,
       "units": 1,
       "fit": false,
+      "size": null,
       "landed_at": "2026-10-11T14:30:00Z",
       "is_new": true,
-      "url": "/d/b0new00001-dyson-purifier-cool-tp07-air-purifier"
+      "url": "/d/b0new00001-dyson-purifier-cool-tp07-air-purifier",
+      "confirmed_at": "2026-10-11T14:40:00Z"
     },
     {
       "id": "B0C1234567",
@@ -34,9 +36,11 @@
       "variants": 1,
       "units": 1,
       "fit": false,
+      "size": null,
       "landed_at": "2026-10-11T14:00:00Z",
       "is_new": true,
-      "url": "/d/b0c1234567-thrustmaster-eswap-x-pro-controller-for"
+      "url": "/d/b0c1234567-thrustmaster-eswap-x-pro-controller-for",
+      "confirmed_at": "2026-10-11T14:40:00Z"
     },
     {
       "id": "B0HEAD0001",
@@ -53,9 +57,11 @@
       "variants": 1,
       "units": 1,
       "fit": false,
+      "size": null,
       "landed_at": "2026-10-11T12:00:00Z",
       "is_new": true,
-      "url": "/d/b0head0001-sony-wh-1000xm5-wireless-noise-canceling"
+      "url": "/d/b0head0001-sony-wh-1000xm5-wireless-noise-canceling",
+      "confirmed_at": "2026-10-11T14:40:00Z"
     },
     {
       "id": "B0ESPR0002",
@@ -72,9 +78,11 @@
       "variants": 2,
       "units": 2,
       "fit": false,
+      "size": null,
       "landed_at": "2026-10-11T09:00:00Z",
       "is_new": true,
-      "url": "/d/b0espr0002-breville-barista-express-espresso-machine-black"
+      "url": "/d/b0espr0002-breville-barista-express-espresso-machine-black",
+      "confirmed_at": "2026-10-11T14:40:00Z"
     },
     {
       "id": "B0ROBO0001",
@@ -91,9 +99,11 @@
       "variants": 1,
       "units": 1,
       "fit": false,
+      "size": null,
       "landed_at": "2026-10-11T05:00:00Z",
       "is_new": true,
-      "url": "/d/b0robo0001-irobot-roomba-j7-self-emptying-robot"
+      "url": "/d/b0robo0001-irobot-roomba-j7-self-emptying-robot",
+      "confirmed_at": "2026-10-11T14:40:00Z"
     },
     {
       "id": "B0FANS0001",
@@ -110,9 +120,11 @@
       "variants": 1,
       "units": 1,
       "fit": false,
+      "size": null,
       "landed_at": "2026-10-11T03:00:00Z",
       "is_new": true,
-      "url": "/d/b0fans0001-noctua-nf-a12x25-pwm-premium-fan"
+      "url": "/d/b0fans0001-noctua-nf-a12x25-pwm-premium-fan",
+      "confirmed_at": "2026-10-11T14:40:00Z"
     },
     {
       "id": "B0GAME0002",
@@ -129,9 +141,11 @@
       "variants": 1,
       "units": 1,
       "fit": false,
+      "size": null,
       "landed_at": "2026-10-10T09:00:00Z",
       "is_new": false,
-      "url": "/d/b0game0002-logitech-g-pro-x-superlight-2"
+      "url": "/d/b0game0002-logitech-g-pro-x-superlight-2",
+      "confirmed_at": "2026-10-11T14:40:00Z"
     },
     {
       "id": "B0LUGG0001",
@@ -148,9 +162,11 @@
       "variants": 1,
       "units": 1,
       "fit": true,
+      "size": "L",
       "landed_at": "2026-10-09T23:00:00Z",
       "is_new": false,
-      "url": "/d/b0lugg0001-samsonite-freeform-hardside-spinner-large-checked"
+      "url": "/d/b0lugg0001-samsonite-freeform-hardside-spinner-large-checked",
+      "confirmed_at": "2026-10-11T14:40:00Z"
     },
     {
       "id": "B0GAME0003",
@@ -167,9 +183,11 @@
       "variants": 1,
       "units": 1,
       "fit": false,
+      "size": null,
       "landed_at": "2026-10-09T13:00:00Z",
       "is_new": false,
-      "url": "/d/b0game0003-steelseries-arctis-nova-pro-wireless-headset"
+      "url": "/d/b0game0003-steelseries-arctis-nova-pro-wireless-headset",
+      "confirmed_at": "2026-10-11T14:40:00Z"
     },
     {
       "id": "B0HEAD0002",
@@ -186,9 +204,11 @@
       "variants": 1,
       "units": 1,
       "fit": false,
+      "size": null,
       "landed_at": "2026-10-08T07:00:00Z",
       "is_new": false,
-      "url": "/d/b0head0002-bose-quietcomfort-ultra-earbuds"
+      "url": "/d/b0head0002-bose-quietcomfort-ultra-earbuds",
+      "confirmed_at": "2026-10-11T14:40:00Z"
     }
   ],
   "count": 10,

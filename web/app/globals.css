@@ -65,6 +65,20 @@ section { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
   border-bottom: 3px solid transparent; color: var(--fo-ink-2); text-decoration: none; font-size: 16px; white-space: nowrap;
 }
 .nav a:hover { color: var(--fo-ink); border-bottom-color: var(--fo-rule); }
+.search { margin-left: auto; display: flex; min-width: 0; }
+.search input {
+  width: 260px; max-width: 100%; height: 40px; padding: 0 12px; border: 1.5px solid var(--fo-rule); border-right: 0;
+  border-radius: var(--fo-radius) 0 0 var(--fo-radius); background: var(--fo-paper, var(--fo-slip)); color: var(--fo-ink); font-size: 15px;
+}
+.search input:focus { outline: 2px solid var(--fo-stamp); outline-offset: -2px; }
+.search button {
+  width: 44px; height: 40px; border: 1.5px solid var(--fo-rule); border-radius: 0 var(--fo-radius) var(--fo-radius) 0;
+  background: var(--fo-slip); color: var(--fo-ink); font-size: 20px; display: flex; align-items: center; justify-content: center;
+}
+.hide-aisles { display: flex; flex-direction: column; gap: 6px; }
+.hide-aisles summary { cursor: pointer; min-height: 44px; display: flex; align-items: center; }
+.search-gone { display: flex; flex-direction: column; gap: 14px; }
+.search-gone .gone-item { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .nav a[aria-current="page"] { color: var(--fo-ink); font-weight: 600; border-bottom-color: var(--fo-ink); }
 
 /* ---------- Wordmark ---------- */
@@ -86,11 +100,13 @@ section { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
 .footer a.keepa { color: var(--fo-kraft-link); }
 [data-theme="dark"] .footer a.keepa { color: var(--fo-kraft-ink); } /* violet on the darker kraft is 4.15:1 */
 .footer .links { margin-left: auto; display: flex; gap: 20px; white-space: nowrap; }
+.footer .links a { min-height: 44px; display: inline-flex; align-items: center; }
 
 /* ---------- Buttons, links, chips ---------- */
 .linkbtn {
   background: none; border: 0; padding: 0; font-size: 16px; font-weight: 600; color: var(--fo-stamp);
   text-decoration: underline; text-underline-offset: 3px; white-space: nowrap;
+  min-height: 44px; display: inline-flex; align-items: center; /* REPORT 17: a 44 px hit area */
 }
 .linkbtn:hover { color: var(--fo-stamp-pressed); }
 .btn {
@@ -162,6 +178,15 @@ section { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
   position: absolute; left: 8px; bottom: 8px; background: #d9bc92; color: #2a1e10; padding: 3px 7px;
   font-family: var(--fo-font-mono); font-size: 12px; font-weight: 600; line-height: 1.4;
 }
+/* D59: the unit's size, at a glance, top right (the stamp holds the top left) */
+.size-tag {
+  position: absolute; top: 10px; right: 8px; background: var(--fo-photo-ink); color: #fff; padding: 3px 8px;
+  font-family: var(--fo-font-mono); font-size: 13px; font-weight: 700; line-height: 1.4; max-width: 60%;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.size-group { display: flex; flex-direction: column; gap: 10px; }
+.size-group h2 { font-size: 18px; font-weight: 700; }
+.size-bar { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; }
 .warn-tag { align-self: flex-start; background: var(--fo-warn-tint); color: var(--fo-warn-ink); font-family: var(--fo-font-mono); font-size: 13px; font-weight: 600; padding: 4px 10px; }
 
 /* ---------- Photos ---------- */
@@ -184,11 +209,37 @@ a.card:hover { box-shadow: 0 0 0 2px var(--fo-ink); color: var(--fo-ink); }
   padding: 12px 14px 14px; display: flex; flex-direction: column; gap: 6px; border-top: 1px dashed var(--fo-rule); flex: 1;
 }
 [data-theme="dark"] .card .body { border-top-color: transparent; padding-left: 6px; padding-right: 6px; }
-.card .line { font-size: 15px; line-height: 1.35; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 4; overflow: hidden; }
-.card .from { font-size: 14px; margin-right: 4px; }
+.card .line { font-size: 15px; line-height: 1.35; overflow-wrap: break-word; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 4; overflow: hidden; }
+.card .from { font-size: 14px; }
 .card .price { font-weight: 700; font-size: 19px; margin-right: 6px; }
 .card .fresh { font-size: 14px; font-weight: 600; color: var(--fo-ink-2); margin-top: auto; }
 .card .fresh.new { color: var(--fo-good); }
+.card .usual { font-size: 14px; color: var(--fo-ink-2); }
+.nw { white-space: nowrap; }
+.feature .usual { font-size: 16px; color: var(--fo-ink-2); }
+.tagline { display: flex; flex-direction: column; gap: 6px; }
+.tagline .lead { font-family: var(--fo-font-display); font-weight: 900; font-size: 40px; text-transform: uppercase; line-height: 1; }
+.tagline .sub { font-size: 18px; line-height: 1.45; color: var(--fo-ink-2); max-width: 720px; }
+.shelf-index { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 20px 28px; }
+.shelf-index .aisle { display: flex; flex-direction: column; gap: 2px; }
+.shelf-index { align-items: start; }
+.shelf-index summary {
+  display: flex; justify-content: space-between; align-items: center; min-height: 44px; cursor: pointer; font-weight: 600;
+  border-bottom: 1.5px solid var(--fo-ink); list-style: none;
+}
+.shelf-index summary::-webkit-details-marker { display: none; }
+.shelf-index summary::after { content: "+"; font-size: 20px; margin-left: 8px; }
+.shelf-index details[open] summary::after { content: "–"; }
+.shelf-index summary .n { margin-left: auto; color: var(--fo-ink-2); font-size: 14px; font-weight: 400; }
+.shelf-index a { padding-left: 8px; }
+.shelf-index a { display: flex; justify-content: space-between; gap: 8px; min-height: 36px; align-items: center; color: var(--fo-ink); text-decoration: none; border-bottom: 1px dashed var(--fo-rule); }
+.shelf-index a:hover { color: var(--fo-stamp); }
+.shelf-index a .n { color: var(--fo-ink-2); font-size: 14px; }
+.cond-line { font-size: 15px; color: var(--fo-ink-2); }
+.watch-after { display: none; }
+.card .out { font-size: 12px; color: var(--fo-ink-2); letter-spacing: .02em; }
+.card .fresh + .out, .card .wear + .out { margin-top: -2px; }
+.card .line + .out { margin-top: auto; }
 .card.acceptable { background: var(--fo-slip-muted); }
 .card.acceptable .photo img { filter: saturate(.4); opacity: .85; }
 .card.acceptable .body { color: var(--fo-ink-2); }
@@ -219,7 +270,7 @@ a.card:hover { box-shadow: 0 0 0 2px var(--fo-ink); color: var(--fo-ink); }
 [data-theme="dark"] .feature .photo { margin: 8px; }
 .feature:hover { box-shadow: 0 0 0 2px var(--fo-ink); color: var(--fo-ink); }
 .feature .info { padding: 24px; display: flex; flex-direction: column; gap: 12px; border-left: 1px dashed var(--fo-rule); min-width: 0; }
-.feature .title { font-size: 22px; font-weight: 600; line-height: 1.25; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 4; overflow: hidden; }
+.feature .title { font-size: 22px; font-weight: 600; line-height: 1.25; overflow-wrap: break-word; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 4; overflow: hidden; }
 .feature .price { font-size: 26px; font-weight: 700; }
 .feature .foot { margin-top: auto; font-size: 15px; color: var(--fo-ink-2); }
 .jl { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
@@ -295,6 +346,16 @@ a.card:hover { box-shadow: 0 0 0 2px var(--fo-ink); color: var(--fo-ink); }
 .sheet .name { font-family: var(--fo-font-display); font-weight: 900; font-size: 32px; text-transform: uppercase; line-height: 1.05; }
 .sheet .lead { font-size: 17px; line-height: 1.5; }
 .sheet .sheet-head { display: flex; justify-content: space-between; align-items: center; }
+.sheet { position: relative; }
+.sheet .x {
+  position: absolute; top: 8px; right: 8px; width: 44px; height: 44px; border: 0; background: none; color: var(--fo-ink);
+  font-size: 28px; line-height: 1; display: flex; align-items: center; justify-content: center;
+}
+.sheet .x:hover { color: var(--fo-stamp); }
+.sheet > .name, .sheet > .sheet-head { padding-right: 40px; }
+.skip { position: absolute; left: -9999px; top: 8px; z-index: 20; background: var(--fo-ink); color: var(--fo-on-ink); padding: 12px 16px; font-weight: 600; }
+.skip:focus { left: 8px; }
+.cond-note { font-size: 14px; color: var(--fo-ink-2); }
 
 /* ---------- Recently gone ---------- */
 .explainer { max-width: 720px; font-size: 18px; line-height: 1.55; text-wrap: pretty; }
@@ -308,7 +369,7 @@ a.card:hover { box-shadow: 0 0 0 2px var(--fo-ink); color: var(--fo-ink); }
 .trow .thumb { border: 1px solid var(--fo-rule-soft); }
 .trow .thumb img { filter: grayscale(1); opacity: .55; }
 .trow .prod { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
-.trow .prod .t { font-weight: 600; line-height: 1.3; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+.trow .prod .t { font-weight: 600; line-height: 1.3; overflow-wrap: break-word; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
 .trow .prod .s { font-size: 14px; color: var(--fo-ink-2); }
 .trow .prod .linkbtn { align-self: flex-start; font-size: 15px; padding: 2px 0; text-align: left; white-space: normal; }
 .trow .last { display: flex; align-items: baseline; justify-content: flex-end; gap: 10px; white-space: nowrap; }
@@ -319,6 +380,26 @@ a.card:hover { box-shadow: 0 0 0 2px var(--fo-ink); color: var(--fo-ink); }
 .trow .r { text-align: right; }
 
 /* ---------- Sold ---------- */
+.deal-page { background: var(--fo-slip); display: grid; grid-template-columns: minmax(0, 420px) minmax(0, 1fr); max-width: 1000px; }
+.deal-page .photo { aspect-ratio: 1 / 1; }
+[data-theme="dark"] .deal-page .photo { margin: 8px; }
+.deal-page.is-gone .photo img { filter: grayscale(1); opacity: .4; }
+.deal-page .info { padding: 28px; display: flex; flex-direction: column; gap: 14px; border-left: 1px dashed var(--fo-rule); min-width: 0; }
+.deal-page .title { font-size: 26px; font-weight: 600; line-height: 1.25; overflow-wrap: break-word; }
+.deal-page .price { font-size: 30px; font-weight: 700; }
+.deal-page .price .pct, .deal-page .price .was-label { font-size: 18px; font-weight: 400; color: var(--fo-ink-2); }
+.deal-page .usual { font-size: 17px; color: var(--fo-ink-2); }
+.deal-page .p { font-size: 16px; line-height: 1.5; color: var(--fo-ink-2); }
+.deal-page .actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.btn-outline.tall { height: 52px; padding: 0 18px; }
+.card-share {
+  position: absolute; top: 6px; right: 6px; z-index: 2; width: 44px; height: 44px; display: flex; align-items: center;
+  justify-content: center; border: 0; background: none; color: var(--fo-ink); opacity: .75;
+}
+.card-share span { background: var(--fo-slip); border: 1px solid var(--fo-rule); width: 30px; height: 30px; display: flex; align-items: center; justify-content: center; font-size: 15px; }
+.card-share:hover { opacity: 1; }
+.li { display: flex; flex-direction: column; position: relative; min-width: 0; }
+.li > .card { flex: 1; }
 .sold { background: var(--fo-slip); display: grid; grid-template-columns: 220px 1fr; max-width: 760px; }
 .sold .photo { aspect-ratio: auto; height: 220px; }
 [data-theme="dark"] .sold .photo { margin: 8px; height: 204px; }
@@ -352,6 +433,8 @@ a.card:hover { box-shadow: 0 0 0 2px var(--fo-ink); color: var(--fo-ink); }
   .header .wrap { padding-top: 10px; padding-bottom: 0; gap: 4px 16px; }
   .nav { width: 100%; margin: 0 -14px; }
   .nav a { padding: 0 12px; font-size: 15px; }
+  .search { width: 100%; margin: 4px 0 10px; }
+  .search input { flex: 1; width: auto; }
   .page-title { font-size: 44px; }
   .shelf-title { font-size: 52px; }
   .head h2.big { font-size: 30px; }
@@ -369,6 +452,15 @@ a.card:hover { box-shadow: 0 0 0 2px var(--fo-ink); color: var(--fo-ink); }
   .trow .when, .trow.th .r:last-child { display: none; }
   .trow .last { flex-direction: column; align-items: flex-end; gap: 0; }
   .sold { grid-template-columns: minmax(0, 1fr); }
+  .deal-page { grid-template-columns: minmax(0, 1fr); }
+  .deal-page .info { border-left: 0; border-top: 1px dashed var(--fo-rule); padding: 20px; }
+  .deal-page .title { font-size: 21px; }
+  .tagline .lead { font-size: 30px; }
+  .tagline .sub { font-size: 16px; }
+  .today-row .li:nth-child(n+5) { display: none; } /* trust-first §1.3: Today is shorter on phones */
+  .shelf-top .watch-panel { display: none; }      /* REPORT 16: on phones it comes after the first cards */
+  .watch-after { display: block; }
+  .phone-hide { display: none; }
   .sold .info { border-left: 0; border-top: 1px dashed var(--fo-rule); }
   .grid.three { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .panel { padding: 28px 22px; }

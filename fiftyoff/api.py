@@ -97,6 +97,16 @@ def _query(view: str) -> list[dict]:
         return conn.execute(f"SELECT * FROM {view}").fetchall()
 
 
+def stale_sighting(r: dict) -> bool:
+    """Beta QA 10-12: a seen-only row the public must not show. Either the ASIN is held for review (a hold removes it
+    from the live views, and its sweep row used to come back as a seen card), or every unit we track for it went gone
+    at or after this sighting (our own check beats an older Keepa sighting)."""
+    if r.get("source") is None:
+        return False
+    gone_at = r.get("units_gone_at")
+    return bool(r.get("held")) or (gone_at is not None and gone_at >= r["last_confirmed_at"])
+
+
 def pg_live() -> list[dict]:
     return _query("deal_internal")
 
@@ -149,8 +159,16 @@ def pg_log_click(row: dict) -> None:
     """api-v1: one /d/ hit."""
     import psycopg
     with psycopg.connect(os.environ["FEED_DATABASE_URL"]) as conn:
-        conn.execute("INSERT INTO click (asin, slug, surface, live, referer_path) "
-                     "VALUES (%(asin)s, %(slug)s, %(surface)s, %(live)s, %(referer_path)s)", row)
+        conn.execute("INSERT INTO click (asin, slug, surface, live, referer_path, variant) "
+                     "VALUES (%(asin)s, %(slug)s, %(surface)s, %(live)s, %(referer_path)s, %(variant)s)", row)
+
+
+def pg_log_view(page: str, variant: str) -> None:
+    """trust-first measure: one page view, as a count for (today, page, arm)."""
+    import psycopg
+    with psycopg.connect(os.environ["FEED_DATABASE_URL"]) as conn:
+        conn.execute("INSERT INTO page_view (day, page, variant, n) VALUES (current_date, %s, %s, 1) "
+                     "ON CONFLICT (day, page, variant) DO UPDATE SET n = page_view.n + 1", (page, variant))
 
 
 def pg_nodes() -> list[dict]:
@@ -439,6 +457,7 @@ def create_app(fetch: Callable[[], list[dict]] = pg_live, fetch_gone: Callable[[
                set_user: Callable[[str, dict, bool, str], dict] = pg_set_user,
                fetch_arrivals: Callable[[], list[dict]] = pg_arrivals,
                log_click: Callable[[dict], None] = pg_log_click,
+               log_view: Callable[[str, str], None] = pg_log_view,
                site_hosts: str | None = None, site_open: bool | None = None, site_dir: str | Path | None = None,
                snapshot_thread: bool = True,
                password: str | None = None, user: str = "fiftyoff",
@@ -626,14 +645,18 @@ def create_app(fetch: Callable[[], list[dict]] = pg_live, fetch_gone: Callable[[
         return meta, kmap
 
     def public_deals(now: datetime, acceptable: bool, q: str | None = None,
-                     everything: bool = False) -> tuple[list[dict], list[dict]]:
+                     everything: bool = False, almost: bool = False) -> tuple[list[dict], list[dict]]:
         """The one public selection (D45/D46; the shelves page and /api/v1 both call it): 50%+ from a $40 reference,
         likely still there, not held for price, appeal above JUNK_APPEAL, on a `front` or `aisle` shelf.
         `everything` keeps junk and hidden shelves too. `acceptable` keeps Acceptable units, but a card is built from
         its better units whenever it has any, so only an Acceptable-only product reads "Acceptable".
         Returns (cards with shelf, aisle and size, plus their rows under `_rows`; the rows held for price)."""
         meta, kmap = shelf_meta()
-        rows = [r for r in pool_for("all", now, wide=True) if _keep(r, "50", acceptable, None, q)]
+        if almost:  # trust-first §4.4: what we already hold under 50%, inside the tracker's tiers only
+            rows = [r for r in pool_for("all", now, wide=True) if (r["strict"] or 0) < HEADLINE and r.get("in_tiers", True)
+                    and _keep(r, "all", acceptable, None, q) and not stale_sighting(r)]
+        else:
+            rows = [r for r in pool_for("all", now, wide=True) if _keep(r, "50", acceptable, None, q) and not stale_sighting(r)]
         rows = [r for r in rows if r.get("source") is not None or RANK[live_confidence(r, now)["label"]] >= CONF_MIN["likely"]]
         if acceptable:
             prime = {card_key(r) for r in rows if r["cond"] != ACCEPTABLE}
@@ -696,13 +719,14 @@ def create_app(fetch: Callable[[], list[dict]] = pg_live, fetch_gone: Callable[[
     def v1_build(now: datetime) -> dict:
         cards, _ = public_deals(now, True)
         live = {card_key(r)[0] for p in cards for r in p["_rows"]}
-        return api_v1.build(now, cards, public_gone(now, live), shelf_meta()[0], per_week())
+        near, _ = public_deals(now, False, almost=True)
+        return api_v1.build(now, cards, public_gone(now, live), shelf_meta()[0], per_week(), near)
 
     snapshot = api_v1.Snapshot(v1_build)
     app.state.snapshot = snapshot
     if hosts:
         site = api_v1.create_site(snapshot, log_click, Path(site_dir or os.environ.get("SITE_DIR") or SITE_DIR),
-                                  lambda: site_open)
+                                  lambda: site_open, log_view)
         # Routes resolve before the "/" preview page, so each site host gets the whole site app (gate still applies).
         app.router.routes[:0] = [Host(h, app=site) for h in hosts]
         if snapshot_thread:

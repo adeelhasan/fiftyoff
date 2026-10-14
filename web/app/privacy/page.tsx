@@ -8,18 +8,25 @@ export default function Page() {
   return (
     <Legal
       title="Privacy"
-      updated="11 OCT 2026"
+      updated="13 OCT 2026"
       short={<p>You don&apos;t need an account to browse. We set no cookies of our own, and clicks are logged without your IP address. Alerts aren&apos;t live yet, so we don&apos;t collect email addresses.</p>}
       sections={[
         {
           id: "browse",
           title: "Browsing",
-          body: <p>Your browser keeps one value on your device: when you last looked at All deals, so we can show what&apos;s new since then. It never leaves your device.</p>,
+          body: (
+            <p>
+              Your browser keeps two values on your device: when you last looked, so we can show what&apos;s new since then, and
+              which of two versions of the home page you see (a letter, a or b), so we can tell which one works better. Only
+              that letter ever leaves your device. We count page views per day and page, with that letter and nothing else:
+              no IP address, no cookie, no id.
+            </p>
+          ),
         },
         {
           id: "clicks",
           title: "Clicks to Amazon",
-          body: <p>When you open a deal, we record which deal it was, the time, and the fiftyOff page you came from. Not who you are, and not your IP address.</p>,
+          body: <p>When you open a deal, we record which deal it was, the time, the fiftyOff page and spot you came from, and the a/b letter above. Not who you are, and not your IP address.</p>,
         },
         {
           id: "email",

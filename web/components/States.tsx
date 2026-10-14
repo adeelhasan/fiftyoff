@@ -13,7 +13,7 @@ export function Empty({
 }) {
   const t = new Date();
   const when = t
-    .toLocaleString("en-GB", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", hour12: false })
+    .toLocaleString("en-GB", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", hour12: false, timeZoneName: "short" })
     .replace(",", " ·")
     .toUpperCase();
   return (

@@ -29,7 +29,7 @@ export function Sheet({ label, onClose, children }: { label: string; onClose: ()
   close.current = onClose;
   useEffect(() => {
     const prev = document.activeElement as HTMLElement | null;
-    ref.current?.querySelector<HTMLElement>("input, button")?.focus();
+    ref.current?.querySelector<HTMLElement>("input, button:not(.x)")?.focus();
     const key = (e: KeyboardEvent) => e.key === "Escape" && close.current();
     document.addEventListener("keydown", key);
     const overflow = document.body.style.overflow;
@@ -43,6 +43,9 @@ export function Sheet({ label, onClose, children }: { label: string; onClose: ()
   return (
     <div className="scrim" onClick={onClose}>
       <div className="sheet" role="dialog" aria-modal="true" aria-label={label} ref={ref} onClick={(e) => e.stopPropagation()}>
+        <button className="x" onClick={onClose} aria-label="Close">
+          ×
+        </button>
         {children}
       </div>
     </div>
