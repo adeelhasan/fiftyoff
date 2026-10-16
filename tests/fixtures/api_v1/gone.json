@@ -23,7 +23,8 @@
       "gone_at": "2026-10-11T12:00:00Z",
       "last_price": 119.99,
       "up_for_min": 300,
-      "up_for_is_lower_bound": false
+      "up_for_is_lower_bound": false,
+      "brand": null
     },
     {
       "id": "B0GONE0004",
@@ -48,7 +49,8 @@
       "gone_at": "2026-10-11T11:00:00Z",
       "last_price": 19.99,
       "up_for_min": 60,
-      "up_for_is_lower_bound": false
+      "up_for_is_lower_bound": false,
+      "brand": null
     },
     {
       "id": "B0GONE0002",
@@ -73,7 +75,8 @@
       "gone_at": "2026-10-10T19:00:00Z",
       "last_price": 249.99,
       "up_for_min": 120,
-      "up_for_is_lower_bound": true
+      "up_for_is_lower_bound": true,
+      "brand": null
     },
     {
       "id": "B0GONE0003",
@@ -98,7 +101,8 @@
       "gone_at": "2026-10-09T03:00:00Z",
       "last_price": 89.99,
       "up_for_min": 1800,
-      "up_for_is_lower_bound": false
+      "up_for_is_lower_bound": false,
+      "brand": null
     }
   ],
   "count": 4,

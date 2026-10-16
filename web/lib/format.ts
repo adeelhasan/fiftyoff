@@ -1,4 +1,4 @@
-import { arm } from "./ab";
+import { variant } from "./ab";
 import type { Deal, Shelf } from "./types";
 
 export const money = (n: number) =>
@@ -12,19 +12,14 @@ export function minutesSince(iso: string | null | undefined, now = Date.now()): 
   return Number.isNaN(t) ? null : Math.max(0, Math.round((now - t) / 60000));
 }
 
-/** "40 min ago", "3 h ago", "2 d ago". */
+/** "40 min ago", "3 h ago", "2 d ago", "over a week ago". Precise where it matters (1 h vs 2 h), coarse where it
+ * doesn't (7 days vs 10: the user, 10-15). */
 export function ago(min: number | null): string {
   if (min === null) return "";
   if (min < 60) return `${min} min ago`;
   if (min < 1440) return `${Math.round(min / 60)} h ago`;
-  return `${Math.round(min / 1440)} d ago`;
-}
-
-/** The card's freshness line: "New 2 h ago" (good green) or "1 d ago". */
-export function freshness(d: Deal, now = Date.now()): { text: string; isNew: boolean } {
-  const a = ago(minutesSince(d.landed_at, now));
-  if (!a) return { text: "", isNew: d.is_new };
-  return d.is_new ? { text: `New ${a}`, isNew: true } : { text: a, isNew: false };
+  if (min < 7 * 1440) return `${Math.round(min / 1440)} d ago`;
+  return "over a week ago";
 }
 
 /** A duration in minutes: "20 min", "15 h", "3 days", "4 months", "a year". */
@@ -46,11 +41,10 @@ export function upFor(min: number | null, lowerBound: boolean): string {
   return `up for ${span(min)}`;
 }
 
-/** "3 SIZES" / "2 VERSIONS" when the card groups variants (its price reads "from"); "2 AVAILABLE" for several units
- * of the same thing; nothing for one (REPORT 12). */
+/** "3 SIZES" / "2 VERSIONS" when the card groups variants (its price reads "from"): a heads-up that it's grouped.
+ * The number of units isn't on cards (the user, 10-15: it confused more than it helped); the deal page says it. */
 export function variantTag(d: Deal): string {
   if (d.variants > 1) return `${d.variants} ${d.fit ? "SIZES" : "VERSIONS"}`;
-  if (d.units > 1) return `${d.units} AVAILABLE`;
   return "";
 }
 
@@ -67,7 +61,7 @@ export function shelfName(id: string, shelves: Map<string, Shelf> | null): strin
 
 /** A card's outbound link: our /d/ redirect, tagged with where on the site it was (`s`) and the A/B arm (`v`). */
 export function outLink(d: Deal, source = "web"): string {
-  const v = typeof window === "undefined" ? "" : arm();
+  const v = typeof window === "undefined" ? "" : variant();
   return `${d.url}${d.url.includes("?") ? "&" : "?"}s=${source}${v ? `&v=${v}` : ""}`;
 }
 /** Links that leave for Amazon open in a new tab, so the feed stays where it was. */

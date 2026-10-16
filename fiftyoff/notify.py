@@ -1,40 +1,45 @@
-"""Notifications v1 (exploratory, 2026-10-08): who hears about a new deal, when, and what the message says.
+"""Keyword alerts, rules k0.1 (docs/handoffs/alerts-beta.md; replaces the shelf rules n0.1 of 2026-10-08).
 
-The tracker records unit events (new, revived) in `deal_event`; this module decides, deterministically
-(rule 7), whether an event is worth telling anyone, waits for the product's appeal rating (its shelf comes
-from it), then queues one delivery per watcher at event time + their tier's delay. A pass sends what's due,
-re-checking first that the deal is still live, and folds everything due for one address into one message.
+The tracker records unit events (new, revived) in `deal_event` for the units it checks live; this module decides,
+deterministically (rule 7), whether an event is worth telling anyone, and whose keyword it matches. The match is
+search's own (`search.matches` over the title and brand), so a keyword means what it means in the header search.
 
-Every number here is a starting value to tune ([notify] and [tiers.*] in preflight.toml), not a decision.
-Tiers are config only: a tier is a name with perks (delay_minutes, max_interests). Billing doesn't exist yet.
-Messages carry D19 fields only plus "Data by Keepa", and link to our site, never to Amazon (D23).
+A match opens a send window for that alert (event time + the tier's delay); later matches for the same alert join
+it. When the window closes, units that went or got unlisted are marked stale (My alerts lists them as missed) and
+the rest go out as one email. A one-shot tier's alert then ends (`fired`); if everything was missed, it stays
+armed. Each pass also ends alerts past their tier's lifetime (`expired`) and sends the expiry email.
+
+Every number is a starting value to tune ([notify] and [tiers.*] in preflight.toml). Tiers are config only:
+a name with perks. Billing doesn't exist yet.
 """
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from html import escape
 from typing import Callable, Protocol
 
-from .shelving import UNSORTED, resolve_shelf
+from . import mail
+from .search import matches, words
 
-RULES_VERSION = "n0.1"
+RULES_VERSION = "k0.1"
 ACCEPTABLE = "Used - Acceptable"
-ATTRIBUTION = "Data by Keepa (https://keepa.com)"
+KEYWORD_MIN, KEYWORD_MAX = 2, 40
+KEYWORD_CHARS = re.compile(r"[^a-z0-9 &'.+\-]")
 
 
 @dataclass
 class NotifyConfig:
-    min_strict: float = 0.50       # the shelves page headline: 50%+ ...
+    min_strict: float = 0.50       # the site's headline: 50%+ ...
     min_ref_cents: int = 4000      # ... from a $40 reference
     fresh_hours: float = 6         # a "new" unit must be this fresh by Keepa's dating (a first check finds old ones too)
-    min_appeal: int = 3            # skip what the rater scored below this
-    rating_wait_minutes: float = 60  # an unrated product waits this long for the rater, then the event expires
-    repeat_hours: float = 72       # one message per product (parent ASIN) per watcher in this window
-    link_base: str = "https://preview.fiftyoff.app/closed-preview/shelves"
+    min_appeal: int = 3            # skip what the rater scored below this (unrated products don't wait)
+    repeat_hours: float = 72       # one message per product (parent ASIN) per subscriber in this window
+    site: str = "https://beta.fiftyoff.app"
     poll_seconds: float = 60
-    tiers: dict[str, dict] = field(default_factory=lambda: {"free": {"delay_minutes": 10, "max_interests": 1}})
+    tiers: dict[str, dict] = field(default_factory=lambda: {
+        "free": {"delay_minutes": 30, "max_interests": 1, "one_shot": True, "lifetime_days": 30}})
 
     @classmethod
     def from_toml(cls, t: dict) -> "NotifyConfig":
@@ -49,8 +54,19 @@ class NotifyConfig:
 
 def perks(cfg: NotifyConfig, tier: str) -> dict:
     """A tier's perks; an unknown tier gets the free tier's."""
-    base = {"delay_minutes": 0, "max_interests": 1}
+    base = {"delay_minutes": 0, "max_interests": 1, "one_shot": False, "lifetime_days": 0}
     return {**base, **cfg.tiers.get("free", {}), **cfg.tiers.get(tier, {})}
+
+
+def keyword(raw: str | None) -> str | None:
+    """A keyword as stored: lower-cased, trimmed, spaces collapsed, odd characters dropped, 2-40 characters with at
+    least one letter or digit. None if it doesn't qualify."""
+    k = " ".join(KEYWORD_CHARS.sub(" ", (raw or "").lower()).split())
+    return k if KEYWORD_MIN <= len(k) <= KEYWORD_MAX and re.search(r"[a-z0-9]", k) else None
+
+
+def hits(kw: str, ev: dict) -> bool:
+    return matches(kw, words(ev.get("title"), ev.get("brand")))
 
 
 def product_key(ev: dict) -> str:
@@ -66,9 +82,8 @@ def _born(ev: dict) -> datetime | None:
     return max(ts) if ts else None
 
 
-def decide(ev: dict, appeal: dict | None, kind_map: dict[str, str], shelves: dict[str, dict],
-           now: datetime, cfg: NotifyConfig) -> tuple[str, dict]:
-    """One event -> ("skip" | "wait" | "expire" | "ready", details). ev is the event joined to its unit and watch."""
+def decide(ev: dict, appeal: dict | None, now: datetime, cfg: NotifyConfig) -> tuple[str, dict]:
+    """One event -> ("skip" | "ready", details). ev is the event joined to its unit, watch and product."""
     if ev.get("state") == "gone":
         return "skip", {"why": "gone"}
     if ev.get("unlisted"):
@@ -83,53 +98,13 @@ def decide(ev: dict, appeal: dict | None, kind_map: dict[str, str], shelves: dic
         born = _born(ev)
         if born is None or now - born > timedelta(hours=cfg.fresh_hours):
             return "skip", {"why": "not fresh"}
-    if appeal is None:
-        if now - ev["at"] < timedelta(minutes=cfg.rating_wait_minutes):
-            return "wait", {}
-        return "expire", {"why": "no rating"}
-    if appeal["score"] < cfg.min_appeal:
+    if appeal is not None and appeal["score"] < cfg.min_appeal:
         return "skip", {"why": f"appeal {appeal['score']}"}
-    sid = resolve_shelf(appeal, kind_map, shelves)
-    if sid == UNSORTED:
-        return "skip", {"why": "no shelf"}
-    return "ready", {"product_key": product_key(ev), "shelf": sid, "aisle": shelves[sid]["aisle"],
-                     "score": appeal["score"], "role": shelves[sid].get("role")}
-
-
-def watches(interests: list[tuple[str, str]], shelf: str, aisle: str, role: str | None) -> bool:
-    """A shelf interest always matches its shelf; an aisle interest covers the aisle's front and aisle shelves."""
-    return ("shelf", shelf) in interests or (("aisle", aisle) in interests and role != "hidden")
+    return "ready", {"product_key": product_key(ev), "score": appeal["score"] if appeal else None}
 
 
 def deliver_at(at: datetime, tier: str, cfg: NotifyConfig) -> datetime:
     return at + timedelta(minutes=perks(cfg, tier)["delay_minutes"])
-
-
-def link(item: dict, cfg: NotifyConfig) -> str:
-    return f"{cfg.link_base}?shelf={item['shelf']}"
-
-
-def render(items: list[dict], cfg: NotifyConfig) -> tuple[str, str, str]:
-    """(subject, text, html) for one address. items: title, strict, cond, resale_cents, shelf, shelf_name.
-    D19 fields only, our link, never Amazon's."""
-    items = sorted(items, key=lambda i: -(i["strict"] or 0))
-    one = items[0]
-    if len(items) == 1:
-        subject = f"{round(one['strict'] * 100)}% off: {one['title'][:70]}"
-    else:
-        subject = f"{len(items)} new deals on your shelves, up to {round(one['strict'] * 100)}% off"
-
-    def line(i: dict) -> str:
-        return (f"{round(i['strict'] * 100)}% off · ${i['resale_cents'] / 100:,.2f} · {i['cond'] or 'Resale'}"
-                f" · {i['shelf_name']}")
-
-    text = "\n\n".join(f"{i['title']}\n{line(i)}\n{link(i, cfg)}" for i in items)
-    text += f"\n\n--\nfiftyoff test alert ({RULES_VERSION}). {ATTRIBUTION}\n"
-    html = "".join(f'<p><a href="{escape(link(i, cfg))}">{escape(i["title"])}</a><br>{escape(line(i))}</p>'
-                   for i in items)
-    html += (f'<p style="color:#777;font-size:12px">fiftyoff test alert ({RULES_VERSION}). '
-             f'<a href="https://keepa.com">Data by Keepa</a></p>')
-    return subject, text, html
 
 
 # ---------------------------------------------------------------- one pass
@@ -137,71 +112,105 @@ def render(items: list[dict], cfg: NotifyConfig) -> tuple[str, str, str]:
 class NotifyStore(Protocol):
     def open_events(self) -> list[dict]: ...
     def appeal(self, keys: list[str]) -> dict[str, dict]: ...
-    def shelves(self) -> dict[str, dict]: ...
-    def kind_map(self) -> dict[str, str]: ...
     def set_event(self, event_id: int, status: str, details: dict) -> None: ...
-    def audience(self) -> list[dict]: ...  # subscriber_id, tier, endpoint_id, interests [(kind, value)]
+    def audience(self) -> list[dict]: ...  # subscriber_id, tier, endpoint_id, interest_id, keyword, armed_at
+    def windows(self) -> dict[int, datetime]: ...  # interest_id -> deliver_at of its queued deliveries
     def recent(self, since: datetime) -> set[tuple[int, str]]: ...  # (subscriber_id, product_key) already told
     def add_deliveries(self, rows: list[dict]) -> None: ...
     def due(self, now: datetime) -> list[dict]: ...
     def mark(self, delivery_ids: list[int], status: str, error: str | None = None) -> None: ...
+    def end_interest(self, interest_id: int, state: str, now: datetime) -> None: ...
     def endpoint_result(self, endpoint_id: int, ok: bool) -> None: ...
-
-
-Sender = Callable[[dict, str, str, str], None]  # (endpoint, subject, text, html); raises on failure
+    def armed_before(self, t: datetime) -> list[dict]: ...  # watching alerts armed before t (expiry candidates)
 
 
 def advance(store: NotifyStore, now: datetime, cfg: NotifyConfig) -> dict[str, int]:
-    """Decide open events and queue deliveries for the ready ones."""
+    """Decide open events and queue deliveries for the alerts they match."""
     events = store.open_events()
     if not events:
         return {}
     ratings = store.appeal(sorted({product_key(e) for e in events} | {e["asin"] for e in events}))
-    shelves, kmap = store.shelves(), store.kind_map()
     audience = store.audience()
+    windows = store.windows()
     told = store.recent(now - timedelta(hours=cfg.repeat_hours))
     counts: dict[str, int] = {}
     for ev in events:
         a = ratings.get(product_key(ev)) or ratings.get(ev["asin"])
-        status, d = decide(ev, a, kmap, shelves, now, cfg)
+        status, d = decide(ev, a, now, cfg)
         if status == "ready":
-            rows = []
+            rows, seen = [], set()
             for s in audience:
-                if (s["subscriber_id"], d["product_key"]) in told \
-                        or not watches(s["interests"], d["shelf"], d["aisle"], d["role"]):
-                    continue
+                key = (s["subscriber_id"], d["product_key"])
+                if s["armed_at"] is None or s["armed_at"] > ev["at"] or key in told or key in seen \
+                        or not hits(s["keyword"], ev):
+                    continue  # armed after the deal landed (no backfill), told already, or no match
+                seen.add(key)
+                at = windows.setdefault(s["interest_id"], deliver_at(ev["at"], s["tier"], cfg))
                 rows.append({"event_id": ev["id"], "subscriber_id": s["subscriber_id"], "endpoint_id": s["endpoint_id"],
-                             "product_key": d["product_key"], "deliver_at": deliver_at(ev["at"], s["tier"], cfg)})
-            told |= {(r["subscriber_id"], d["product_key"]) for r in rows}
+                             "interest_id": s["interest_id"], "product_key": d["product_key"], "deliver_at": at})
+            told |= seen
             store.add_deliveries(rows)
             status = "queued" if rows else "no_watchers"
-        if status != "wait" or ev.get("status") != "waiting":
-            store.set_event(ev["id"], "waiting" if status == "wait" else status, {**d, "rules_v": RULES_VERSION})
+        store.set_event(ev["id"], status, {**d, "rules_v": RULES_VERSION})
         counts[status] = counts.get(status, 0) + 1
     return counts
 
 
-def send_due(store: NotifyStore, send: Sender, now: datetime, cfg: NotifyConfig, log: Callable[[str], None] = print) -> int:
-    """Send what's due, one message per endpoint. A deal that went or got unlisted since is dropped (stale)."""
+def send_due(store: NotifyStore, send: mail.Sender, now: datetime, cfg: NotifyConfig, links: mail.Links,
+             log: Callable[[str], None] = print) -> int:
+    """Send what's due, one email per alert. A stopped or paused alert's deliveries are dropped; a unit that went
+    or got unlisted since is stale (missed). One-shot alerts end once something is sent."""
     due = store.due(now)
-    stale = [d["id"] for d in due if d.get("state") == "gone" or d.get("unlisted")]
+    dropped = [d["id"] for d in due if d["interest_state"] != "watching" or d.get("paused")]
+    stale = [d["id"] for d in due if d["id"] not in dropped and (d.get("state") == "gone" or d.get("unlisted"))]
+    if dropped:
+        store.mark(dropped, "dropped")
     if stale:
         store.mark(stale, "stale")
     by: dict[int, list[dict]] = {}
     for d in due:
-        if d["id"] not in stale:
-            by.setdefault(d["endpoint_id"], []).append(d)
+        if d["id"] not in dropped and d["id"] not in stale:
+            by.setdefault(d["interest_id"], []).append(d)
     sent = 0
-    for eid, items in by.items():
-        subject, text, html = render(items, cfg)
+    for iid, items in by.items():
+        first = items[0]
+        one_shot = perks(cfg, first["tier"])["one_shot"]
+        m = mail.deals_mail(first["keyword"], items, links, first["subscriber_id"], iid, one_shot, now)
         try:
-            send(items[0], subject, text, html)
+            send(first["address"], m)
         except Exception as e:  # noqa: BLE001 — one bad address must not stop the others
             store.mark([i["id"] for i in items], "failed", repr(e)[:300])
-            store.endpoint_result(eid, False)
-            log(f"  send to endpoint {eid} failed: {e!r}")
+            store.endpoint_result(first["endpoint_id"], False)
+            log(f"  send to endpoint {first['endpoint_id']} failed: {e!r}")
             continue
         store.mark([i["id"] for i in items], "sent")
-        store.endpoint_result(eid, True)
+        store.endpoint_result(first["endpoint_id"], True)
+        if one_shot:
+            store.end_interest(iid, "fired", now)
         sent += 1
     return sent
+
+
+def expire(store: NotifyStore, send: mail.Sender, now: datetime, cfg: NotifyConfig, links: mail.Links,
+           log: Callable[[str], None] = print) -> int:
+    """End alerts past their tier's lifetime and send each the expiry email. An alert with a send window still
+    open keeps going until the window closes."""
+    lifetimes = [perks(cfg, t)["lifetime_days"] for t in {"free", *cfg.tiers}]
+    shortest = min((x for x in lifetimes if x), default=0)
+    if not shortest:
+        return 0
+    windows = store.windows()
+    n = 0
+    for r in store.armed_before(now - timedelta(days=shortest)):
+        days = perks(cfg, r["tier"])["lifetime_days"]
+        if not days or r["armed_at"] > now - timedelta(days=days) or r["interest_id"] in windows:
+            continue
+        store.end_interest(r["interest_id"], "expired", now)  # first, so a failing send can't repeat every pass
+        n += 1
+        if r.get("paused") or not r.get("address"):
+            continue
+        try:
+            send(r["address"], mail.expired_mail(r["keyword"], links, r["subscriber_id"], r["interest_id"], days))
+        except Exception as e:  # noqa: BLE001
+            log(f"  expiry email for alert {r['interest_id']} failed: {e!r}")
+    return n

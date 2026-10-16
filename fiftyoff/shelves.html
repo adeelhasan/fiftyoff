@@ -179,10 +179,10 @@ function render(d) {
   if (state.shelf) {
     const s = d.shelves[0];
     $("shelves").innerHTML = `<div class="shelf"><h2><button type="button" class="back" data-back>‹ All shelves</button></h2>
-      <h2>${esc(cap(s.shelf))} <small>${s.count} · ${esc(AISLES[s.aisle] || s.aisle)}${s.watching ? ` · ${s.watching} watching` : ""}</small></h2>${roles(s)}<ul class="grid">${s.products.map(card).join("")}</ul></div>`;
+      <h2>${esc(cap(s.shelf))} <small>${s.count} · ${esc(AISLES[s.aisle] || s.aisle)}</small></h2>${roles(s)}<ul class="grid">${s.products.map(card).join("")}</ul></div>`;
     return;
   }
-  $("shelves").innerHTML = d.shelves.map((s) => `<div class="shelf r-${esc(s.role)}"><h2>${esc(cap(s.shelf))} <small>${s.count}${s.watching ? ` · ${s.watching} watching` : ""}${admin && state.review ? ` · ${esc(AISLES[s.aisle] || s.aisle)}` : ""}</small>
+  $("shelves").innerHTML = d.shelves.map((s) => `<div class="shelf r-${esc(s.role)}"><h2>${esc(cap(s.shelf))} <small>${s.count}${admin && state.review ? ` · ${esc(AISLES[s.aisle] || s.aisle)}` : ""}</small>
       ${s.count > s.products.length ? `<a href="?shelf=${encodeURIComponent(s.id)}" data-shelf="${esc(s.id)}">See all ${s.count} ›</a>` : ""}</h2>
       ${roles(s)}${s.products.length ? `<ul class="row">${s.products.map(card).join("")}</ul>` : ""}</div>`).join("");
 }

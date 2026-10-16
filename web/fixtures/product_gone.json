@@ -23,7 +23,8 @@
     "gone_at": "2026-10-11T12:00:00Z",
     "last_price": 119.99,
     "up_for_min": 300,
-    "up_for_is_lower_bound": false
+    "up_for_is_lower_bound": false,
+    "brand": null
   },
   "same_shelf": [
     {
@@ -45,9 +46,11 @@
       "landed_at": "2026-10-11T09:00:00Z",
       "is_new": true,
       "url": "/d/b0espr0002-breville-barista-express-espresso-machine-black",
-      "confirmed_at": "2026-10-11T14:40:00Z"
+      "confirmed_at": "2026-10-11T14:40:00Z",
+      "brand": "Acme"
     }
   ],
+  "same_size": null,
   "attribution": {
     "text": "Data by Keepa",
     "url": "https://keepa.com"

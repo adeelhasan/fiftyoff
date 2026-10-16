@@ -45,3 +45,6 @@ research/shelves/snapshots/
 research/deals-snapshot.html
 research/screenshots/
 research/appeal/
+
+# per-session role tags (local)
+.claude/roles/sessions/

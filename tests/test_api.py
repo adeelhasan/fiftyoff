@@ -462,9 +462,13 @@ def test_public_drops_held_and_tracked_gone_sightings():
     held = {**base, "asin": "B0HELD0001", "held": True}
     went = {**base, "asin": "B0WENT0001", "units_gone_at": seen_at + timedelta(minutes=2)}
     back = {**base, "asin": "B0BACK0001", "units_gone_at": seen_at - timedelta(hours=3)}
-    c = app(fetch_seen=lambda: [held, went, back])
+    # D67: our checks since the sighting never read the offers (Amazon merged the ASIN); two failures aren't enough
+    blind = {**base, "asin": "B0BLND0001", "failed_since": 3}
+    shaky = {**base, "asin": "B0SHKY0001", "failed_since": 2}
+    c = app(fetch_seen=lambda: [held, went, back, blind, shaky])
     shown = [p["asin"] for s in c.get("/api/shelves?everything=true").json()["shelves"] for p in s["products"]]
     assert "B0HELD0001" not in shown and "B0WENT0001" not in shown and "B0BACK0001" in shown
+    assert "B0BLND0001" not in shown and "B0SHKY0001" in shown
 
 
 def test_shelf_roles_are_set_by_admins_only():

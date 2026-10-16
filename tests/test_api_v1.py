@@ -122,9 +122,10 @@ def make(tmp_path=None, clicks=None, site_open=False, **kw):
     clicks = clicks if clicks is not None else []
     kw.setdefault("log_click", clicks.append)
     kw.setdefault("fetch", live_rows)
+    kw.setdefault("alerts", None)  # never from the shell's env (tests/test_alerts.py passes its own)
     a = create_app(fetch_seen=lambda: [], fetch_gone=gone_rows, fetch_appeal=appeal_rows,
                    fetch_kind_map=lambda: [], fetch_shelves=shelf_rows, fetch_arrivals=arrivals, fetch_review=lambda: [],
-                   fetch_watchers=lambda: [{"shelf_id": "gaming-gear", "watching": 4}], password="s3cret", admin_password="adm",
+                   password="s3cret", admin_password="adm",
                    verifier=None, site_hosts=HOST, site_open=site_open, site_dir=tmp_path or Path("/nonexistent"),
                    snapshot_thread=False, **kw)
     a.state.snapshot.refresh(NOW)
@@ -198,7 +199,8 @@ def test_selection_is_the_public_one():
     assert by["B0C1234567"]["url"] == "/d/b0c1234567-thrustmaster-eswap-x-pro-controller-for"
     assert by["B0C1234567"]["landed_at"] == "2026-10-11T14:00:00Z"
     t = c.get("/api/v1/today", headers=auth()).json()
-    assert len(t["just_in"]) == 5 and t["just_in"][0]["id"] == "B0NEW00001" and t["last_landed_at"] == "2026-10-11T14:30:00Z"
+    # today-quality §4: the unrated Dyson isn't on a front shelf; the fresh rated cards are in Featured, so none is left
+    assert t["just_in"] == [] and t["last_landed_at"] is None
     assert all(x["condition"] != "Acceptable" for x in t["just_in"] + [d for s in t["shelves"] for d in s["deals"]])
     assert "pc-components" not in [s["id"] for s in t["shelves"]] and "just-in" not in [s["id"] for s in t["shelves"]]
     assert [g["id"] for g in t["gone"]] == ["B0GONE0001", "B0GONE0004", "B0GONE0002", "B0GONE0003"]
@@ -221,7 +223,7 @@ def test_gone_windows_and_lifespan_bounds():
     assert p["deal"] is None and p["gone"]["id"] == "B0GONE0001"
     assert [x["shelf"] for x in p["same_shelf"]] == ["espresso-coffee-makers"]
     assert c.get("/api/v1/product/B0NOTHING1", headers=auth()).json() == {
-        "deal": None, "gone": None, "same_shelf": [], "attribution": api_v1.ATTRIBUTION}
+        "deal": None, "gone": None, "same_shelf": [], "same_size": None, "attribution": api_v1.ATTRIBUTION}
 
 
 def test_out_link_redirects_and_logs_a_click():
@@ -355,27 +357,98 @@ def _fd(shelf="watches", pct=60, usual=200.0, cond="Like New", **kw):
     return {**d, **kw}
 
 
-def _fp(brand="Timex", check=()):
-    return {"_rows": [{"brand": brand}], "check_reference": list(check)}
+def _fp(appeal=8, check=(), delight=50.0):
+    return {"_rows": [{"brand": None}], "check_reference": list(check), "appeal": {"score": appeal}, "delight": delight}
 
 
 def test_featured_rules_each_exclude_what_they_should():
-    """trust-first §1.2: one rule per pair; only the last pair passes everything."""
-    cases = [(_fp(), _fd(cond="Acceptable")), (_fp(), _fd(shelf="a", confirmed_at=api_v1._iso(NOW - timedelta(hours=13)))), (_fp(), _fd(shelf="b", pct=91)),
-             (_fp(), _fd(shelf="c", pct=45)), (_fp(brand=None), _fd(shelf="d")), (_fp(), _fd(shelf="e", usual=60.0)),
-             (_fp(check=["stale"]), _fd(shelf="f")), (_fp(), _fd(shelf=api_v1.UNSORTED)),
-             (_fp(), _fd(shelf="ok")), (_fp(), _fd(shelf="ok", id="B0Y"))]  # the second "ok" is a repeat shelf
-    got = api_v1.featured([p for p, _ in cases], [d for _, d in cases], NOW)
-    assert [(d["shelf"], d["id"]) for d in got] == [("ok", "B0X")]
+    """trust-first §1.2, D63: one rule per shelf; only the last shelf's card passes everything. No brand on record is
+    fine: the rating is the brand test."""
+    cases = [(_fp(), _fd(shelf="a", cond="Acceptable")), (_fp(), _fd(shelf="b", confirmed_at=api_v1._iso(NOW - timedelta(hours=25)))),
+             (_fp(), _fd(shelf="c", pct=91)), (_fp(), _fd(shelf="d", pct=45)), (_fp(appeal=6), _fd(shelf="e")),
+             (_fp(), _fd(shelf="f", usual=60.0)), (_fp(check=["stale"]), _fd(shelf="g")), (_fp(), _fd(shelf=api_v1.UNSORTED)),
+             (_fp(), _fd(shelf="ok"))]
+    picks = {d["shelf"]: [(p, d)] for p, d in cases}
+    assert [d["shelf"] for d in api_v1.featured(list(picks), picks, NOW)] == ["ok"]
 
 
-def test_shelf_rotation_is_deterministic_per_day_and_keeps_the_top():
+def test_featured_ranks_by_appeal_across_shelves_one_per_shelf():
+    """D63: the best-rated cards on any Today shelf, whatever the row order; then delight; one per shelf; 7s only
+    fill what the 8+ cards leave."""
+    c = lambda shelf, i, appeal, delight=50.0: (_fp(appeal=appeal, delight=delight), _fd(shelf=shelf, id=f"B0{i}"))
+    picks = {"rugs": [c("rugs", "RUG1", 8, 90.0), c("rugs", "RUG2", 9)],
+             "laptops": [c("laptops", "MAC", 10)],
+             "bags": [c("bags", "MK1", 8, 60.0)],
+             "bedding": [c("bedding", "BED", 5, 99.0)],
+             "lamps": [c("lamps", "LAMP", 7)]}
+    got = api_v1.featured(["rugs", "bedding", "bags", "lamps", "laptops"], picks, NOW)
+    assert [d["id"] for d in got] == ["B0MAC", "B0RUG2", "B0MK1", "B0LAMP"]
+
+
+def test_featured_is_drawn_each_hour_from_the_top_of_the_pool_in_rank_order():
+    """D64: FEATURED_N drawn from the best FEATURED_POOL (one per shelf), the same all hour, another draw next hour."""
+    c = lambda i: (_fp(appeal=8, delight=float(100 - i)), _fd(shelf=f"s{i}", id=f"B0S{i:02d}"))
+    many = {f"s{i}": [c(i)] for i in range(14)}
+    rank = [f"B0S{i:02d}" for i in range(14)]
+    draw = lambda t: [d["id"] for d in api_v1.featured(list(many), many, t)]
+    a = draw(NOW)
+    assert len(a) == api_v1.FEATURED_N and set(a) <= set(rank[:api_v1.FEATURED_POOL]) and a == sorted(a, key=rank.index)
+    assert draw(NOW + timedelta(minutes=50)) == a  # NOW is on the hour
+    assert any(draw(NOW + timedelta(hours=h)) != a for h in range(1, 6))
+
+
+def test_just_in_gates():
+    """today-quality §4: front shelves only, appeal ≥ 6, not Acceptable, not size-dependent, landed in the last 24 h;
+    newest first, never an ungated fallback."""
+    def jd(i, h, shelf="rugs", cond="Like New", fit=False):
+        return {"id": f"B0J{i}", "shelf": shelf, "condition": cond, "fit": fit, "landed_at": api_v1._iso(NOW - timedelta(hours=h))}
+    rated = lambda score: {"appeal": {"score": score}}
+    pairs = [(rated(9), jd(1, 5)), (rated(9), jd(2, 1)), (rated(5), jd(3, 1)), (rated(9), jd(4, 1, cond="Acceptable")),
+             (rated(9), jd(5, 1, fit=True)), (rated(9), jd(6, 1, shelf="ceiling-fans")), (rated(9), jd(7, 30)),
+             ({}, jd(8, 1)), (rated(9), jd(9, 2))]
+    got = api_v1.just_in(pairs, {"rugs"}, NOW, skip={"B0J9"})
+    assert [d["id"] for d in got] == ["B0J2", "B0J1"]
+    assert api_v1.just_in([(rated(3), jd(1, 1))], {"rugs"}, NOW) == []
+
+
+def test_today_shows_each_card_once_and_only_front_shelves_up_top():
+    _, c = make()
+    t = c.get("/api/v1/today", headers=auth()).json()
+    ids = [d["id"] for d in t["featured"]] + [d["id"] for s in t["shelves"] for d in s["deals"]]
+    assert len(ids) == len(set(ids))  # the rows skip Featured's cards
+    appeal = {r["key"]: r["score"] for r in appeal_rows()}
+    got = [appeal.get(d["id"], appeal.get("B0ESPRPAR1")) for d in t["featured"]]
+    assert got == sorted(got, reverse=True) and min(got) >= api_v1.FEATURED_FILL_APPEAL  # best rated first
+    front = {"gaming-gear", "headphones-earbuds", "espresso-coffee-makers", "small-kitchen-appliances", "robot-vacuums", "luggage"}
+    assert {d["shelf"] for d in t["featured"] + t["just_in"]} <= front  # never an `aisle` shelf (Noctua fans) or unrated
+    assert t["count"] == 10 and t["shelf_count"] == 6
+
+
+def test_hand_kept_shelves_open_today_in_their_order(monkeypatch):
+    """D66: TODAY_SHELF_ORDER's shelves first, in that order, only those with live cards; the rest follow, rotated."""
+    monkeypatch.setattr(api_v1, "TODAY_SHELF_ORDER", ("s7", "gone-empty", "s2"))
+    front = [f"s{i}" for i in range(20)]
+    got = api_v1.today_order(front, "2026-10-15")
+    assert got[:2] == ["s7", "s2"] and sorted(got) == sorted(front)
+    assert got[2:] == api_v1.rotate([x for x in front if x not in ("s7", "s2")], "2026-10-15")
+
+
+def test_a_shelf_page_ends_with_its_recently_gone_units():
+    """D66: the shelf payload carries the shelf's gone units from the last 7 days, newest first."""
+    _, c = make()
+    s = c.get("/api/v1/shelves/espresso-coffee-makers", headers=auth()).json()
+    assert [g["id"] for g in s["gone"]] == ["B0GONE0001"]
+    assert c.get("/api/v1/shelves/gaming-gear", headers=auth()).json()["gone"] == []
+
+
+def test_shelf_rotation_keeps_every_shelf_and_the_top_and_is_deterministic_per_day():
     order = [f"s{i}" for i in range(20)]
     a, b = api_v1.rotate(order, "2026-10-13"), api_v1.rotate(order, "2026-10-13")
-    assert a == b and len(a) == api_v1.TODAY_SHELVES and a[:3] == ["s0", "s1", "s2"]
-    assert set(a) <= set(order[:api_v1.TODAY_POOL]) and a == sorted(a, key=order.index)  # score order kept
+    assert a == b and sorted(a) == sorted(order) and a[:3] == ["s0", "s1", "s2"]
+    pool = api_v1.TODAY_POOL
+    assert set(a[3:pool]) == set(order[3:pool]) and a[pool:] == order[pool:]  # the pool shuffled, the rest in order
     assert any(api_v1.rotate(order, f"2026-10-{d:02d}") != a for d in range(14, 20))  # other days differ
-    assert api_v1.rotate(order[:5], "2026-10-13") == order[:5]  # fewer shelves than rows: all of them
+    assert api_v1.rotate(order[:5], "2026-10-13")[:3] == order[:3] and api_v1.rotate(order, "2026-10-13", n=4) == a[:4]
 
 
 def test_mixed_order_never_runs_more_than_two_from_one_shelf_when_it_can_avoid_it():
@@ -397,9 +470,20 @@ def test_saved_and_mixed_sorts_are_accepted():
 def test_new_click_sources_are_recorded():
     clicks = []
     _, c = make(clicks=clicks)
-    for s in ("featured", "share", "search", "almost", "ios", "bogus"):
+    for s in ("featured", "share", "search", "almost", "ios", "related", "bogus"):
         c.get(f"/d/b0c1234567-x?s={s}", headers=auth())
-    assert [r["surface"] for r in clicks] == ["featured", "share", "search", "almost", "ios", None]
+    assert [r["surface"] for r in clicks] == ["featured", "share", "search", "almost", "ios", "related", None]
+
+
+def test_deal_page_opens_are_logged_with_surface_and_arm():
+    """D64: a card opens our deal page; the page reports which deal, from where, in which arms (tagline + featured)."""
+    opens = []
+    _, c = make(log_open=opens.append)
+    assert c.post("/api/v1/open?id=b0c1234567&s=featured&v=ab", headers=auth()).status_code == 204
+    assert c.post("/api/v1/open?id=B0C1234567&s=bogus&v=zz", headers=auth()).status_code == 204
+    assert c.post("/api/v1/open?id=not-an-asin", headers=auth()).status_code == 422
+    assert opens == [{"asin": "B0C1234567", "surface": "featured", "variant": "ab"},
+                     {"asin": "B0C1234567", "surface": None, "variant": None}]
 
 
 def test_page_views_and_click_variants_keep_only_the_allowed_values():
@@ -497,6 +581,23 @@ def test_sizes_page_quotes_the_unit_in_your_size_and_counts_the_picker():
     f = {g["id"]: {v["v"]: v["n"] for v in g["values"]} for g in api_v1.size_facets(cards, NOW)["groups"]}
     assert f["letter"] == {"M": 1, "L": 1} and f["shoe-men"] == {"9": 1, "10.5": 1}
     assert api_v1.size_facets(cards, NOW)["unsized"] == 1
+
+
+def test_a_sized_deal_page_shows_related_cards_in_its_size():
+    """D69: a coat in M gets the shelf's other M cards first; with none in its size, the shelf as before."""
+    m = lambda a, t: _card([(a, t)], "jackets-coats")
+    coat = m("B0COAT0001", "Marmot Men's Fordham Jacket, Black, Medium")
+    others = [m("B0COAT0002", "Columbia Men's Watertight Jacket, Medium"), m("B0COAT0003", "North Face Men's Venture Jacket, Large"),
+              _card([("B0COAT0004", "Patagonia Men's Torrentshell, Small"), ("B0COAT0005", "Patagonia Men's Torrentshell, Medium")], "jackets-coats")]
+    lone = m("B0COAT0006", "Arc'teryx Men's Beta Jacket, X-Large")
+    meta = {"jackets-coats": {"name": "jackets & coats", "aisle": "fashion", "role": "aisle"}}
+    snap = api_v1.build(NOW, [coat, *others, lone], [], meta, {})
+    deal = lambda a: snap["by_asin"][a]
+    same, size = api_v1.related(snap, deal("B0COAT0001"))
+    assert size == "M" and {(d["id"], d["size"]) for d in same} == {("B0COAT0002", "M"), ("B0COAT0005", "M")}  # the
+    # Patagonia card quotes its M unit, not its cheaper-or-first S
+    same, size = api_v1.related(snap, deal("B0COAT0006"))
+    assert size is None and len(same) == api_v1.SAME_SHELF  # no other XL: the shelf as before
 
 
 @pytest.mark.parametrize("title,shelf,label", [

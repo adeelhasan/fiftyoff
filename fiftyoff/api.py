@@ -32,7 +32,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from starlette.concurrency import run_in_threadpool
 from starlette.routing import Host
 
-from . import access, api_v1, arbitrage, curation
+from . import access, alerts as alerts_mod, api_v1, arbitrage, curation, mail, notify
 from .analysis import review_reasons
 from .confidence import CONFIDENCE_VERSION, RANK, live_confidence
 from .score import SCORE_VERSION, breakdown, image_url, score
@@ -97,14 +97,20 @@ def _query(view: str) -> list[dict]:
         return conn.execute(f"SELECT * FROM {view}").fetchall()
 
 
+UNREADABLE_CHECKS = 3  # D67: this many failed checks since a sighting, and none that worked, hide the seen card
+
+
 def stale_sighting(r: dict) -> bool:
     """Beta QA 10-12: a seen-only row the public must not show. Either the ASIN is held for review (a hold removes it
     from the live views, and its sweep row used to come back as a seen card), or every unit we track for it went gone
-    at or after this sighting (our own check beats an older Keepa sighting)."""
+    at or after this sighting (our own check beats an older Keepa sighting), or (D67) our checks since the sighting
+    keep failing to read its offers: Amazon has often merged the ASIN into another listing (seen 10-15), so
+    the unit can't be confirmed and the link may land on a page without it."""
     if r.get("source") is None:
         return False
     gone_at = r.get("units_gone_at")
-    return bool(r.get("held")) or (gone_at is not None and gone_at >= r["last_confirmed_at"])
+    return (bool(r.get("held")) or (gone_at is not None and gone_at >= r["last_confirmed_at"])
+            or (r.get("failed_since") or 0) >= UNREADABLE_CHECKS)
 
 
 def pg_live() -> list[dict]:
@@ -136,11 +142,6 @@ def pg_shelves() -> list[dict]:
     return _query("shelf")
 
 
-def pg_watchers() -> list[dict]:
-    """Notifications v1: how many subscribers watch each shelf (admins only for now)."""
-    return _query("shelf_watchers")
-
-
 def pg_set_shelf_role(shelf_id: str, role: str, by: str) -> dict | None:
     """D46: the user's role for a shelf (overrides the model's proposal)."""
     import psycopg
@@ -161,6 +162,13 @@ def pg_log_click(row: dict) -> None:
     with psycopg.connect(os.environ["FEED_DATABASE_URL"]) as conn:
         conn.execute("INSERT INTO click (asin, slug, surface, live, referer_path, variant) "
                      "VALUES (%(asin)s, %(slug)s, %(surface)s, %(live)s, %(referer_path)s, %(variant)s)", row)
+
+
+def pg_log_open(row: dict) -> None:
+    """D64: one deal page opened (which deal, the surface, the arm)."""
+    import psycopg
+    with psycopg.connect(os.environ["FEED_DATABASE_URL"]) as conn:
+        conn.execute("INSERT INTO deal_open (asin, surface, variant) VALUES (%(asin)s, %(surface)s, %(variant)s)", row)
 
 
 def pg_log_view(page: str, variant: str) -> None:
@@ -268,6 +276,22 @@ def admin_tags(path: Path = CONFIG) -> tuple[str, ...]:
         return tuple(tomllib.loads(path.read_text()).get("admin", {}).get("tags") or curation.DEFAULT_TAGS)
     except (OSError, tomllib.TOMLDecodeError):
         return curation.DEFAULT_TAGS
+
+
+def default_alerts(path: Path = CONFIG) -> "alerts_mod.Alerts | None":
+    """Keyword alerts (alerts-beta.md) from the environment: on when SECRET_KEY is set. ALERTS_OPEN=true shows the
+    sign-up entry points to everyone (until then, only browsers that visited ?alerts=on). Email goes out over
+    SMTP_* like the notifier's, or to the log without SMTP_HOST."""
+    key = os.environ.get("SECRET_KEY")
+    if not key or not os.environ.get("FEED_DATABASE_URL"):  # the test container has .env but no API database role
+        return None
+    try:
+        cfg = notify.NotifyConfig.from_toml(tomllib.loads(path.read_text()))
+    except (OSError, tomllib.TOMLDecodeError):
+        cfg = notify.NotifyConfig()
+    send, _ = mail.make_sender()
+    return alerts_mod.Alerts(alerts_mod.PgAlerts(), send, key, cfg.site.rstrip("/"), cfg,
+                             is_open=lambda: os.environ.get("ALERTS_OPEN", "").lower() in ("1", "true", "yes"))
 
 
 CACHE_SECONDS = 30  # however much traffic arrives, the database sees at most one query per view per 30 s
@@ -447,7 +471,6 @@ def create_app(fetch: Callable[[], list[dict]] = pg_live, fetch_gone: Callable[[
                fetch_appeal: Callable[[], list[dict]] = pg_appeal,
                fetch_kind_map: Callable[[], list[dict]] = pg_kind_map,
                fetch_shelves: Callable[[], list[dict]] = pg_shelves,
-               fetch_watchers: Callable[[], list[dict]] = pg_watchers,
                set_shelf_role: Callable[[str, str, str], dict | None] = pg_set_shelf_role,
                fetch_review: Callable[[], list[dict]] = pg_review,
                fetch_curated: Callable[[], list[dict]] = pg_curated,
@@ -458,7 +481,9 @@ def create_app(fetch: Callable[[], list[dict]] = pg_live, fetch_gone: Callable[[
                fetch_arrivals: Callable[[], list[dict]] = pg_arrivals,
                log_click: Callable[[dict], None] = pg_log_click,
                log_view: Callable[[str, str], None] = pg_log_view,
+               log_open: Callable[[dict], None] = pg_log_open,
                site_hosts: str | None = None, site_open: bool | None = None, site_dir: str | Path | None = None,
+               alerts: "alerts_mod.Alerts | None | bool" = True,
                snapshot_thread: bool = True,
                password: str | None = None, user: str = "fiftyoff",
                admin_password: str | None = None, tags: tuple[str, ...] | None = None,
@@ -726,7 +751,8 @@ def create_app(fetch: Callable[[], list[dict]] = pg_live, fetch_gone: Callable[[
     app.state.snapshot = snapshot
     if hosts:
         site = api_v1.create_site(snapshot, log_click, Path(site_dir or os.environ.get("SITE_DIR") or SITE_DIR),
-                                  lambda: site_open, log_view)
+                                  lambda: site_open, log_view, log_open,
+                                  default_alerts() if alerts is True else alerts or None)
         # Routes resolve before the "/" preview page, so each site host gets the whole site app (gate still applies).
         app.router.routes[:0] = [Host(h, app=site) for h in hosts]
         if snapshot_thread:
@@ -774,19 +800,12 @@ def create_app(fetch: Callable[[], list[dict]] = pg_live, fetch_gone: Callable[[
                     by.setdefault(sid, [])
         order = sorted(by, key=lambda k: (k == UNSORTED, -sum(p["delight"] for p in by[k][:3]) / 3))
 
-        watching = {}
-        if admin:
-            try:  # notifications v1: watcher counts, admins only until public counts are approved
-                watching = {w["shelf_id"]: w["watching"] for w in cached("watchers", fetch_watchers)}
-            except Exception:  # noqa: BLE001
-                pass
-
         def entry(sid: str) -> dict:
             x = meta.get(sid, {})
             e = {"id": sid, "shelf": x.get("name", "just in"), "aisle": x.get("aisle") or (by[sid][0]["aisle"] if by[sid] else "other"),
                  "role": role(sid), "count": len(by[sid]), "products": by[sid] if shelf else by[sid][:per]}
             if admin:
-                e.update(proposed_role=x.get("proposed_role"), role_reason=x.get("role_reason"), watching=watching.get(sid, 0))
+                e.update(proposed_role=x.get("proposed_role"), role_reason=x.get("role_reason"))
             return e
 
         out = [entry(k) for k in order if not shelf or k == shelf]

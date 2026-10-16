@@ -31,13 +31,19 @@ GRANT SELECT ON kind_map TO feed_reader;
 -- D46: shelves and their roles (the admin sets a role from the shelves page)
 GRANT SELECT ON shelf TO feed_reader;
 GRANT UPDATE (role, updated_by, updated_at) ON shelf TO feed_reader;
--- Notifications v1: watcher counts per shelf (shown to admins)
-GRANT SELECT ON shelf_watchers TO feed_reader;
+-- Keyword alerts (alerts-beta.md): sign-up, confirm and My alerts write subscribers, their email endpoint and
+-- their alerts; My alerts reads what an alert sent or missed. Nothing else about deliveries or events.
+GRANT SELECT, INSERT, UPDATE ON subscriber, endpoint, interest TO feed_reader;
+GRANT USAGE ON SEQUENCE subscriber_id_seq, endpoint_id_seq, interest_id_seq TO feed_reader;
+GRANT SELECT ON alert_delivery TO feed_reader;
 -- api-v1: /d/ click log (insert only) and new arrivals per shelf (per_week)
 GRANT INSERT ON click TO feed_reader;
 GRANT USAGE ON SEQUENCE click_id_seq TO feed_reader;
 GRANT SELECT ON arrival_7d TO feed_reader;
 -- trust-first: page-view counts per day, page and A/B arm (upsert)
 GRANT SELECT, INSERT, UPDATE ON page_view TO feed_reader;
+-- D64: deal pages opened (insert only)
+GRANT INSERT ON deal_open TO feed_reader;
+GRANT USAGE ON SEQUENCE deal_open_id_seq TO feed_reader;
 SQL
-echo "feed_reader: SELECT on the feed, gone, status and admin views; INSERT/UPDATE on curation and app_user, INSERT on their logs and click"
+echo "feed_reader: SELECT on the feed, gone, status and admin views; INSERT/UPDATE on curation, app_user and alerts (subscriber, endpoint, interest), INSERT on their logs and click"

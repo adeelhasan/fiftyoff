@@ -5,6 +5,11 @@ export function dealPath(d: Deal): string {
   return `/deal/${d.slug}/`;
 }
 
+/** D64: where a card goes: our deal page, carrying the surface the card was on (the page logs the open). */
+export function dealLink(d: Deal, source = "web"): string {
+  return `${dealPath(d)}?s=${source}`;
+}
+
 export function shareUrl(d: Deal): string {
   return `${location.origin}${dealPath(d)}?s=share`;
 }

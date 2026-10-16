@@ -24,6 +24,7 @@ export interface Deal {
   is_new: boolean;
   url: string; // always our /d/{slug}, never Amazon directly
   confirmed_at: string | null; // ISO, our (or Keepa's feed's) last sighting of the quoted unit
+  brand: string | null; // alerts-beta: prefills a keyword alert
 }
 
 export interface Gone extends Deal {
@@ -66,9 +67,11 @@ export interface DealsResponse {
 }
 
 export interface TodayResponse {
-  featured: Deal[]; // trust-first §1.2: picked by rules and appeal, one per shelf
-  just_in: Deal[];
+  featured: Deal[]; // today-quality §1: the best passing card of each shelf row, in row order
+  just_in: Deal[]; // today-quality §4: gated, newest first; may be empty
   last_landed_at: string | null;
+  count: number; // today-quality §9: live deals (All deals' default count)
+  shelf_count: number; // shelves with live deals
   aisles: AisleCount[];
   shelves: (Shelf & { deals: Deal[] })[];
   gone: Gone[];
@@ -81,6 +84,7 @@ export interface ShelvesResponse {
 export interface ShelfResponse {
   shelf: Shelf;
   deals: Deal[];
+  gone: Gone[]; // D66: this shelf's units gone in the last 7 days, newest first
 }
 
 export interface AlmostResponse {
@@ -96,6 +100,7 @@ export interface ProductResponse {
   deal: Deal | null;
   gone: Gone | null;
   same_shelf: Deal[];
+  same_size: string | null; // D69: the related cards are in this size (a sized deal), else null
 }
 
 export type CondId = "like-new" | "very-good" | "good" | "acceptable";

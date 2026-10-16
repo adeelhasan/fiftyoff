@@ -1,7 +1,7 @@
 "use client";
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { arm } from "@/lib/ab";
+import { variant } from "@/lib/ab";
 import { api, countView } from "@/lib/api";
 import { count, shelfName } from "@/lib/format";
 import { useApi, useNow, useShelves } from "@/lib/hooks";
@@ -22,14 +22,14 @@ export default function Sizes() {
     setMine(m);
     setEditing(!m);
     setReady(true);
-    countView("sizes", arm());
+    countView("sizes", variant());
   }, []);
 
   if (!ready) return <SkeletonGrid n={8} className="grid w200" />;
   return (
     <section style={{ gap: 28 }}>
       <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-        <h1 className="page-title">By size</h1>
+        <h1 className="page-title">Clothes &amp; Shoes</h1>
         <p className="explainer">
           Clothes and shoes come one size per unit, so a great deal only helps if it fits. Tell us your sizes once and we
           show only the half-off deals in them. Your sizes stay on this device. Everything else is in{" "}

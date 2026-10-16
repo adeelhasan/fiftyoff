@@ -6,7 +6,8 @@ import { useApi, useNow, useShelves } from "@/lib/hooks";
 import type { GoneWindow } from "@/lib/types";
 import { Photo } from "../DealCard";
 import { Empty, LoadError } from "../States";
-import { useWatch } from "../Watch";
+import { suggestKeyword } from "@/lib/alerts";
+import { AlertLink } from "../Alert";
 
 const WINDOWS: [GoneWindow, string, string][] = [
   ["24h", "24 h", "24 H"],
@@ -23,7 +24,6 @@ export default function RecentlyGone() {
   const { data, error, loading, retry } = useApi(() => api.gone(win), win);
   const shelves = useShelves();
   const now = useNow();
-  const watch = useWatch();
   const pick = (w: GoneWindow) => {
     setWin(w);
     history.replaceState(history.state, "", w === "3d" ? location.pathname : `?window=${w}`);
@@ -86,9 +86,9 @@ export default function RecentlyGone() {
                     {g.condition} · {shelf}
                     {up ? ` · ${up}` : ""}
                   </span>
-                  <button className="linkbtn" onClick={() => watch(shelf)}>
-                    Watch {shelf}
-                  </button>
+                  <AlertLink keyword={suggestKeyword(g.title, g.brand)} source="gone">
+                    Tell me when one lands
+                  </AlertLink>
                 </div>
                 <div className="last">
                   <span className="p tnum">{money(g.last_price)}</span>

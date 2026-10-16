@@ -19,7 +19,8 @@
       "landed_at": "2026-10-11T14:00:00Z",
       "is_new": true,
       "url": "/d/b0c1234567-thrustmaster-eswap-x-pro-controller-for",
-      "confirmed_at": "2026-10-11T14:40:00Z"
+      "confirmed_at": "2026-10-11T14:40:00Z",
+      "brand": "Acme"
     },
     {
       "id": "B0GAME0002",
@@ -40,7 +41,8 @@
       "landed_at": "2026-10-10T09:00:00Z",
       "is_new": false,
       "url": "/d/b0game0002-logitech-g-pro-x-superlight-2",
-      "confirmed_at": "2026-10-11T14:40:00Z"
+      "confirmed_at": "2026-10-11T14:40:00Z",
+      "brand": "Acme"
     }
   ],
   "count": 3,

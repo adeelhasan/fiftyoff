@@ -8,8 +8,8 @@ export default function Page() {
   return (
     <Legal
       title="Privacy"
-      updated="13 OCT 2026"
-      short={<p>You don&apos;t need an account to browse. We set no cookies of our own, and clicks are logged without your IP address. Alerts aren&apos;t live yet, so we don&apos;t collect email addresses.</p>}
+      updated="15 OCT 2026"
+      short={<p>You don&apos;t need an account to browse. We set no cookies of our own unless you set an alert, and clicks are logged without your IP address. If you set an alert, we keep your email address and your keywords, only to send your alerts.</p>}
       sections={[
         {
           id: "browse",
@@ -31,7 +31,15 @@ export default function Page() {
         {
           id: "email",
           title: "Email",
-          body: <p>&ldquo;Watch this shelf&rdquo; doesn&apos;t send or store your address yet. When alerts start, this page will say what we keep and how to delete it.</p>,
+          body: (
+            <p>
+              If you set an alert, we keep your email address, the keywords you watch, where on the site you set each one
+              (a search, a deal page, a gone deal), when it started and ended, and which deals we emailed you or missed. We use
+              them only to send your alerts and sign-in links; the emails go out through Resend. Confirming an alert signs you
+              in on that browser with one cookie (90 days, nothing else in it). Stop or pause alerts from any email or from My
+              alerts. To have your address and alerts deleted, ask through the Contact page; a delete button is coming.
+            </p>
+          ),
         },
         {
           id: "others",

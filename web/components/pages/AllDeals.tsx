@@ -1,6 +1,6 @@
 "use client";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { arm } from "@/lib/ab";
+import { variant } from "@/lib/ab";
 import { api, countView } from "@/lib/api";
 import { count, shelfName } from "@/lib/format";
 import { useNow, useShelves } from "@/lib/hooks";
@@ -8,7 +8,9 @@ import { markSeen, visitSince } from "@/lib/lastLook";
 import type { AisleCount, CondId, Deal, DealsResponse, Gone, PriceBand, Sort } from "@/lib/types";
 import { DealCard, GoneMini, SkeletonGrid } from "../DealCard";
 import { Empty, LoadError } from "../States";
-import { Sheet, useWatch } from "../Watch";
+import { suggestKeyword } from "@/lib/alerts";
+import { AlertLink, AlertPrompt, useAlert } from "../Alert";
+import { Sheet } from "../Sheet";
 
 // The design's sidebar (README "All deals"); the server filters, sorts and pages (api-v1.md).
 const CONDS: [CondId, string][] = [
@@ -93,11 +95,12 @@ export default function AllDeals() {
   const [sheet, setSheet] = useState(false);
   const shelves = useShelves();
   const now = useNow();
+  const alertsOn = useAlert().enabled;
 
   useEffect(() => {
     setSince(visitSince());
     setF(fromUrl());
-    countView(new URLSearchParams(location.search).get("q") ? "search" : "deals", arm());
+    countView(new URLSearchParams(location.search).get("q") ? "search" : "deals", variant());
   }, []);
 
   const key = f ? JSON.stringify(f) : "";
@@ -209,10 +212,11 @@ export default function AllDeals() {
           {!res && !error && <SkeletonGrid n={8} className="grid w200" />}
           {res && res.count === 0 && !loading && f?.q && (
             <Empty title="None right now">
-              Nothing live matches &ldquo;{f.q}&rdquo;{res.gone?.length ? ". These went recently" : ""}. Watch the shelf and we&apos;ll
-              tell you when one lands.
+              Nothing live matches &ldquo;{f.q}&rdquo;{res.gone?.length ? ". These went recently" : ""}.
+              {alertsOn ? " Set an alert and we'll tell you when one lands." : " New deals land all day; try again later."}
             </Empty>
           )}
+          {res && f?.q && !loading ? <AlertPrompt q={f.q} strong={res.count === 0} /> : null}
           {res && res.count === 0 && res.gone?.length ? <SearchGone gone={res.gone} now={now} label={label} lead /> : null}
           {res && res.count === 0 && !loading && !f?.q && (
             <Empty
@@ -224,8 +228,8 @@ export default function AllDeals() {
                 ) : null
               }
             >
-              No deals match these filters at the moment. Widen the condition or price, or watch a shelf in this aisle and we&apos;ll
-              tell you when one lands.
+              No deals match these filters at the moment. Widen the condition or price, or search for what you&apos;re after and
+              set an alert.
             </Empty>
           )}
           {fresh.length > 0 && (
@@ -273,24 +277,20 @@ export default function AllDeals() {
   );
 }
 
-/** D54: search matches that have gone, each with the watch for its shelf. Gone is what alerts are for. */
-function SearchGone({ gone, now, label, lead }: { gone: Gone[]; now: number; label: (id: string) => string | undefined; lead?: boolean }) {
-  const watch = useWatch();
+/** D54: search matches that have gone, each with an alert for the next one. Gone is what alerts are for. */
+function SearchGone({ gone, now, lead }: { gone: Gone[]; now: number; label: (id: string) => string | undefined; lead?: boolean }) {
   return (
     <div className="search-gone">
       <div className="group-label later">{lead ? "WENT RECENTLY" : "GONE RECENTLY"}</div>
       <div className="grid minis">
-        {gone.map((g) => {
-          const shelf = label(g.shelf) ?? "this shelf";
-          return (
-            <div className="gone-item" key={`${g.id}-${g.gone_at}`}>
-              <GoneMini g={g} now={now} />
-              <button className="linkbtn" onClick={() => watch(shelf)} style={{ whiteSpace: "normal", textAlign: "left" }}>
-                Watch {shelf}
-              </button>
-            </div>
-          );
-        })}
+        {gone.map((g) => (
+          <div className="gone-item" key={`${g.id}-${g.gone_at}`}>
+            <GoneMini g={g} now={now} />
+            <AlertLink keyword={suggestKeyword(g.title, g.brand)} source="gone">
+              Tell me when one lands
+            </AlertLink>
+          </div>
+        ))}
       </div>
     </div>
   );

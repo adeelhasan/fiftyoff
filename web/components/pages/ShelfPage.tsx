@@ -1,12 +1,12 @@
 "use client";
 import { useEffect } from "react";
-import { arm } from "@/lib/ab";
+import { variant } from "@/lib/ab";
 import { api, countView } from "@/lib/api";
 import { count } from "@/lib/format";
 import { useApi, useIdFromUrl, useNow } from "@/lib/hooks";
-import { DealCard, SkeletonGrid } from "../DealCard";
+import { DealCard, GoneMini, SkeletonGrid } from "../DealCard";
 import { Empty, LoadError } from "../States";
-import { WatchPanel } from "../Watch";
+import { GoneAlert } from "../Alert";
 
 // trust-first §2.2: shelves where "was it worn? is it genuine?" comes up get a line on the grades
 const WORN = new Set(["jewelry", "watches", "rings", "handbags-sunglasses"]);
@@ -20,7 +20,7 @@ export default function ShelfPage() {
   useEffect(() => {
     if (data) document.title = `${data.shelf.name} · fiftyOff`;
   }, [data]);
-  useEffect(() => countView("shelf", arm()), []);
+  useEffect(() => countView("shelf", variant()), []);
 
   if (id === undefined || (!data && !error)) return <ShelfSkeleton />;
   if (!data) {
@@ -57,32 +57,16 @@ export default function ShelfPage() {
             <span>
               <b className="tnum">{count(shelf.live)}</b> live now{worn.length ? `, plus ${count(worn.length)} Acceptable` : ""}
             </span>
-            {shelf.per_week ? (
-              <span>
-                About <b className="tnum">{count(shelf.per_week)}</b> new a week
-              </span>
-            ) : null}
           </div>
         </div>
-        <WatchPanel shelf={shelf.name} />
       </div>
       {deals.length ? (
         <>
           <div className="grid w210" role="list">
-            {deals.slice(0, 4).map((d) => (
+            {deals.map((d) => (
               <DealCard key={d.id} d={d} now={now} />
             ))}
           </div>
-          <div className="watch-after">
-            <WatchPanel shelf={shelf.name} />
-          </div>
-          {deals.length > 4 && (
-            <div className="grid w210" role="list">
-              {deals.slice(4).map((d) => (
-                <DealCard key={d.id} d={d} now={now} />
-              ))}
-            </div>
-          )}
         </>
       ) : worn.length ? null : (
         <Empty>Every unit on this shelf has gone. New ones land most weeks.</Empty>
@@ -96,6 +80,22 @@ export default function ShelfPage() {
             ))}
           </div>
         </>
+      )}
+      {data.gone?.length > 0 && (
+        // D66: what this shelf had and lost lately, so a thin shelf still shows what turns up here (not links)
+        <section>
+          <div className="head">
+            <h2>Recently gone from {shelf.name.toLowerCase()}</h2>
+            <span className="ink2" style={{ fontSize: 16 }}>
+              The last 7 days.
+            </span>
+          </div>
+          <div className="grid minis">
+            {data.gone.map((g) => (
+              <GoneAlert key={g.id} g={g} now={now} />
+            ))}
+          </div>
+        </section>
       )}
     </section>
   );

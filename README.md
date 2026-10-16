@@ -1,83 +1,19 @@
 # fiftyoff
 
-Tools for finding genuinely ~50%-off **Amazon Resale** (formerly Warehouse) deals with the
-[Keepa API](https://keepa.com/#!api) and measuring how long they last.
+Research spike: is there a big enough, measurable pool of genuinely ~50%-off Amazon Resale
+inventory, and can Keepa discover it and reconstruct its history?
 
-"50% off" on Amazon is often measured against an inflated list price. fiftyoff re-prices each
-Resale offer against a **strict reference**: the lowest of Amazon's price, the New price and their
-48 h / 30 d / 90 d averages. A deal only counts if it's still half off by that measure.
+- Plan: [`docs/fiftyoff_research_plan_v0.4.md`](docs/fiftyoff_research_plan_v0.4.md)
+- Agent rules / gate: [`CLAUDE.md`](CLAUDE.md)
+- Pre-registered decisions: [`docs/DECISIONS.md`](docs/DECISIONS.md)
+- Output: `research/preflight-report.md` → GO / PARTIAL GO / STOP
 
-## What's here
-
-| Script | What it does |
-|---|---|
-| `preflight.py` | Budget-capped feasibility probe: deal-feed census, history samples, offline report |
-| `track1.py` | How often popular $100+ products have a Resale offer, and how deep the discount goes |
-| `collector.py` | Forward collector: sweeps the deal feed every 30 min and re-checks a watchlist to time how long each Resale unit lasts |
-| `tracker.py` | New-deal tracker: incremental deal-feed sweeps plus a paced deep sweep split by category (each query under the API's 10k-result cap), priority live checks for 50%+ deals only, unit lifespans with lower/upper bounds and HIGH/MEDIUM/LOW confidence, state in Postgres |
-| `scripts/subcat_map.py` | Subcategory map from stored sweep rows: where deals flow below the root categories, and which products come up again and again |
-| `fiftyoff/api.py` | Read-only deal feed API and preview page (FastAPI): live-checked deals plus a "seen in the feed" layer, subcategory filter, variants grouped by parent, served through a database role that can only read the feed |
-| `fiftyoff/api.py` `/api/shelves` | Shelves view: our own browsing categories, each product placed on a shelf by a model's appeal rating (stored once per product, with the model and rubric version) |
-| `notify.py`, `fiftyoff/notify.py` | Experimental new-deal alerts: the tracker records new and returning units in an outbox table, a notifier matches them to watched shelves with deterministic rules, waits out each tier's delay, re-checks the deal is still live and sends one email per address |
-| `scripts/rate_local.py` | Rates newly seen products (appeal, shelf) with a model, outside the tracker; every output line is validated before it's stored |
-| `rater.py`, `fiftyoff/rater.py` | The API rater: rates new products' appeal and shelf with Claude on a schedule (prompt-cached rubric, monthly dollar cap); never called by the tracker |
-| `fiftyoff/sizes.py` | Sizes for clothes and shoes, read deterministically from each Resale unit's title (letter, numbered, waist × inseam, shoe size with wearer and width); feeds the "By size" page |
-| `scripts/brand_probe.py` | One-off probe: Keepa's deal feed filtered by brand, to measure how much well-known-brand supply exists at 50%+ |
-| `web/` | The website (Next.js static export): Today, All deals, shelves, recently gone, almost half off, and By size, which asks for your sizes once and keeps them on your device |
-| `fiftyoff/` | Keepa client (raw response saved before parsing, token ledger, hard token caps), strict-discount and episode analysis |
-
-How the tracker decides a unit is gone: Amazon often hides a Resale unit for a while and then shows
-it again (the same offer, back within minutes to hours). So a missing unit is first *unconfirmed*,
-counts as *gone* only after 6 hours of continuous absence, and is *revived* if it comes back. Every
-lifespan is reported as a range, never a single precise time.
-
-Design rules the code enforces:
-- Paid Keepa calls happen only from an explicit command, after a printed token estimate and a `[y/N]` prompt.
-- Every command has a free `--dry-run`.
-- Token caps live in `preflight.toml`, and every call is recorded in a ledger.
-- Tests use synthetic fixtures. A socket guard fails any test that touches the network.
-- Discount formulas are versioned, so results can be replayed from saved raw responses.
-
-## Run it
-
-You need your own Keepa API key ([plans](https://keepa.com/#!api); the base plan is 20 tokens/min).
+## Setup
 
 ```bash
-cp .env.example .env          # add KEEPA_API_KEY
-```
-
-**With Docker** (OrbStack or Docker Desktop):
-
-```bash
-docker compose up -d                                    # Postgres 17 (localhost only)
-docker compose run --rm app                             # tests, offline
-docker compose run --rm app collector.py run --dry-run  # plan and token rate, no requests
-docker compose run --rm app tracker.py unlock           # approve a tracker run: token cap + expiry, [y/N]
-docker compose --profile tracker up -d tracker          # long-running tracker
-docker compose up -d api                                # feed API + preview on 127.0.0.1:8000
-```
-
-**Or with [uv](https://docs.astral.sh/uv/):**
-
-```bash
+cp .env.example .env   # add KEEPA_API_KEY
 uv sync
-uv run pytest
-uv run preflight.py --fixtures tests/fixtures/keepa probe   # free rehearsal against fixtures
 ```
 
-`collector.py run` refuses to start until you run `collector.py unlock`, which records your
-approval locally.
-
-## Data
-
-No Keepa data is included. Keepa's terms allow API data to be used only for your own internal
-purposes. Outputs go to `research/`, which is gitignored. Don't publish them.
-
-## Status
-
-This is a research prototype from a hackathon project: CLI scripts and analysis code, not a hosted
-service.
-
-## License
-
-MIT for the code. Keepa data you collect with it stays under Keepa's terms.
+Run it with the steps in [`docs/PREFLIGHT.md`](docs/PREFLIGHT.md). The pre-flight never runs automatically. It is triggered manually and asks for confirmation
+before spending Keepa tokens.

@@ -143,25 +143,27 @@ no_check_aisles = ["diy"]      # D58: rated DIY (faucets, hardware, plumbing, to
 tags = ["featured", "newsletter"]
 
 [notify]
-# Notifications v1 (exploratory, 2026-10-08; fiftyoff/notify.py). Starting values to tune, not decisions.
-min_strict = 0.50               # the shelves page headline: 50%+ ...
+# Keyword alerts, rules k0.1 (fiftyoff/notify.py, docs/handoffs/alerts-beta.md). Starting values to tune, not decisions.
+min_strict = 0.50               # the site's headline: 50%+ ...
 min_ref_cents = 4000            # ... from a $40 reference
 fresh_hours = 6                 # a new unit must be this fresh by Keepa's dating
-min_appeal = 3                  # skip what the rater scored below this
-rating_wait_minutes = 60        # an unrated product waits this long for the rater (scripts/rate_local.py)
-repeat_hours = 72               # one message per product per watcher in this window
-link_base = "https://preview.fiftyoff.app/closed-preview/shelves"
+min_appeal = 3                  # skip what the rater scored below this (unrated products don't wait)
+repeat_hours = 72               # one message per product per subscriber in this window
+site = "https://beta.fiftyoff.app"   # links in emails (deal links go through /d/{slug}?s=email)
 poll_seconds = 60
 
 # Tiers are config only: a name with perks. Billing doesn't exist; switch a subscriber with `notify.py tier`.
-# Perks are open (head start, more shelves, more channels...); these are just the first ones to try.
 [tiers.free]
-delay_minutes = 10
-max_interests = 1               # shown in `notify.py list`, not enforced while testing
+delay_minutes = 30              # the send window: a match waits this long, later matches join it
+max_interests = 1               # keyword alerts at once (a second one shows the swap sheet)
+one_shot = true                 # the alert ends once it has sent an email
+lifetime_days = 30              # ...or after this many days without one (the expiry email)
 
-[tiers.plus]
+[tiers.plus]                    # not sold yet (Head start): no delay, keeps firing
 delay_minutes = 0
-max_interests = 5
+max_interests = 10
+one_shot = false
+lifetime_days = 0
 
 [rater]
 # The API rater (fiftyoff/rater.py, `rater.py run`, compose profile "rater"): rates new products with the Anthropic API

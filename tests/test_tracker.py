@@ -128,6 +128,25 @@ def test_no_check_aisle_is_seen_only(rig):
     assert tr.watch["LATER"].retired is not None
 
 
+def test_a_flicker_does_not_make_an_old_watch_new_again(rig):
+    """D60: a re-shown unit gets a fresh Keepa creationDate. At a known price it keeps the watch's old date (no fast
+    lane); a new low price moves it."""
+    clock, script, store, tr, _ = rig
+    from fiftyoff.tracker import Unit
+    script.pages = [[deal("A", 9000, 20000, unix_to_keepa(T0))]]
+    tr.sweep()
+    tr.units[("A", 1)] = Unit("A", 1, T0, None, T0, 9000, 9000, "Used - Like New", None, 0.55, 0.55, 20000)
+    first = tr.watch["A"].created
+    clock.t += 3 * 3600
+    script.pages = [[deal("A", 9000, 20000, unix_to_keepa(clock.t))]]     # same price, new creationDate: a flicker
+    tr.sweep()
+    assert tr.watch["A"].created == first
+    clock.t += 1800
+    script.pages = [[deal("A", 8000, 20000, unix_to_keepa(clock.t))]]     # a real price cut
+    tr.sweep()
+    assert tr.watch["A"].created > first
+
+
 def test_unit_lifecycle_unconfirmed_return_gone_revive(rig):
     clock, script, store, tr, _ = rig
     script.pages = [[deal("A", 9000, 20000, unix_to_keepa(T0))]]

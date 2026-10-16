@@ -526,7 +526,10 @@ class Tracker:
             w = Watch(asin=r.asin, parent=r.parent, title=r.title, cat=r.root_cat, rank=rank, image=image, added=t)
             self.watch[r.asin] = w
         w.rank, w.last_qualifying = rank, t
-        if creation:
+        # D61: Keepa resets a deal's creationDate whenever Amazon hides and re-shows the unit (a flicker). Only a new
+        # low price makes a watched listing "new" again (the 15-min fast lane); a flicker at a known price keeps its cadence.
+        known = [u.last_price for u in self.units.values() if u.asin == r.asin]
+        if creation and (not known or r.warehouse_cents < min(known)):
             w.created = keepa_to_unix(creation)
         self.store.save_watch(w)
 

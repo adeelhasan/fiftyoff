@@ -18,10 +18,12 @@
     "landed_at": "2026-10-11T09:00:00Z",
     "is_new": true,
     "url": "/d/b0espr0002-breville-barista-express-espresso-machine-black",
-    "confirmed_at": "2026-10-11T14:40:00Z"
+    "confirmed_at": "2026-10-11T14:40:00Z",
+    "brand": "Acme"
   },
   "gone": null,
   "same_shelf": [],
+  "same_size": null,
   "attribution": {
     "text": "Data by Keepa",
     "url": "https://keepa.com"

@@ -63,6 +63,17 @@ export const api = {
   },
 };
 
+/** D64: a deal page opened: which deal, the surface its card was on, the arms. Fire and forget. */
+export function countOpen(asin: string, s: string, v: string): void {
+  if (process.env.NEXT_PUBLIC_API === "fixtures") return;
+  try {
+    const q = `id=${encodeURIComponent(asin)}${s ? `&s=${encodeURIComponent(s)}` : ""}${v ? `&v=${v}` : ""}`;
+    void fetch(`/api/v1/open?${q}`, { method: "POST", keepalive: true }).catch(() => {});
+  } catch {
+    /* counting never breaks a page */
+  }
+}
+
 /** Count a page view (D56): page and A/B arm only. Fire and forget; never in fixtures mode. */
 export function countView(page: string, v: string): void {
   if (process.env.NEXT_PUBLIC_API === "fixtures") return;

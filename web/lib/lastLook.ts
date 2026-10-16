@@ -2,6 +2,10 @@
 // it as `since` for the whole visit (so paging and filter changes don't move the line), and records "now" for the
 // next visit. Rounded down to 10 minutes so the edge cache can still serve the request.
 
+// D60 / today-quality §5: off. With LAST_LOOK false nothing here reads or writes storage, so no page sends `since`
+// and All deals shows one list. Kept for a later "new for you".
+export const LAST_LOOK = false;
+
 const KEY = "fo:last_seen_at";
 const VISIT = "fo:visit_since"; // sessionStorage: this visit's `since`, kept across reloads in the tab
 const TEN_MIN = 10 * 60 * 1000;
@@ -12,6 +16,7 @@ function round(ms: number): string {
 
 /** This visit's `since`, or null on a first visit (then there's no "new" group). */
 export function visitSince(): string | null {
+  if (!LAST_LOOK) return null;
   try {
     const kept = sessionStorage.getItem(VISIT);
     if (kept !== null) return kept || null;
@@ -26,6 +31,7 @@ export function visitSince(): string | null {
 
 /** Call after the feed loaded: the next visit counts from now. */
 export function markSeen(): void {
+  if (!LAST_LOOK) return;
   try {
     localStorage.setItem(KEY, new Date().toISOString());
   } catch {

@@ -1,7 +1,7 @@
 "use client";
 import Link from "next/link";
 import { useEffect } from "react";
-import { arm } from "@/lib/ab";
+import { variant } from "@/lib/ab";
 import { api, countView } from "@/lib/api";
 import { count, shelfName } from "@/lib/format";
 import { useApi, useNow, useShelves } from "@/lib/hooks";
@@ -14,7 +14,7 @@ export default function Almost() {
   const { data, error, retry } = useApi(api.almost, "almost");
   const shelves = useShelves();
   const now = useNow();
-  useEffect(() => countView("almost", arm()), []);
+  useEffect(() => countView("almost", variant()), []);
 
   return (
     <section style={{ gap: 28 }}>

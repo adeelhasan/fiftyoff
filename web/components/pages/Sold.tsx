@@ -5,7 +5,8 @@ import { money, shelfName, span } from "@/lib/format";
 import { useApi, useIdFromUrl, useNow, useShelves } from "@/lib/hooks";
 import { DealCard, Photo } from "../DealCard";
 import { Empty, LoadError } from "../States";
-import { WatchButton } from "../Watch";
+import { suggestKeyword } from "@/lib/alerts";
+import { AlertLink } from "../Alert";
 
 // Where /d/{slug} sends a click whose unit is no longer live (Watch Flow step 7).
 export default function Sold() {
@@ -69,12 +70,12 @@ export default function Sold() {
         <div className="info">
           <h1 className="h">{up ? `This one went ${up} after it was listed` : "This one has gone"}</h1>
           <div className="p">
-            {g.title}, last price <span className="tnum">{money(g.last_price)}</span>, {g.pct_off}% off
-. We&apos;re still watching{" "}
-            {shelf}.
+            {g.title}, last price <span className="tnum">{money(g.last_price)}</span>, {g.pct_off}% off.
           </div>
           <div style={{ marginTop: 4 }}>
-            <WatchButton shelf={shelf} />
+            <AlertLink keyword={suggestKeyword(g.title, g.brand)} source="sold" className="btn btn-stamp">
+              Tell me when the next one lands
+            </AlertLink>
           </div>
         </div>
       </div>

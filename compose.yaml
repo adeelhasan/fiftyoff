@@ -84,6 +84,17 @@ services:
       SITE_HOSTS: ${SITE_HOSTS:-}
       SITE_OPEN: ${SITE_OPEN:-}
       SITE_DIR: /srv/web
+      # Keyword alerts (alerts-beta.md): SECRET_KEY signs links and the session (empty -> no alert routes); the
+      # confirm and sign-in emails go out over the same SMTP settings as the notifier's. ALERTS_OPEN=true shows the
+      # sign-up buttons to everyone (else only to a browser that visited ?alerts=on).
+      SECRET_KEY: ${SECRET_KEY:-}
+      ALERTS_OPEN: ${ALERTS_OPEN:-}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      MAIL_FROM: ${MAIL_FROM:-}
+      MAIL_REPLY_TO: ${MAIL_REPLY_TO:-}
     volumes:
       - ./preflight.toml:/app/preflight.toml:ro   # [admin] tags
       - ./web/out:/srv/web:ro                     # the static site (scripts/deploy-web.sh rsyncs it; no restart needed)
@@ -93,8 +104,8 @@ services:
       db:
         condition: service_healthy
 
-  # Notifications v1 (exploratory): decides new-deal events and emails watchers (notify.py, fiftyoff/notify.py).
-  # Without SMTP_HOST in .env it only logs what it would send. No Keepa calls, no model.
+  # Keyword alerts (k0.1): decides new-deal events and emails the alerts they match (notify.py, fiftyoff/notify.py).
+  # Without SMTP_HOST in .env it only logs what it would send; it needs SECRET_KEY to sign links. No Keepa calls, no model.
   notifier:
     image: fiftyoff:latest
     command: ["notify.py", "run"]

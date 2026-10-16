@@ -237,7 +237,11 @@ SELECT c.asin, NULL::bigint AS offer_id, c.title, c.category, c.image, c.cond, c
        ((c.strict >= 0.40 AND c.ref_cents >= 10000) OR (c.strict >= 0.30 AND c.ref_cents >= 20000)) AS in_tiers,
        EXISTS (SELECT 1 FROM unlisted x WHERE x.asin = c.asin) AS held,  -- QA 10-12: the public feed drops these
        (SELECT max(v.gone_at) FROM units v WHERE v.asin = c.asin AND v.state = 'gone'
-        AND NOT EXISTS (SELECT 1 FROM units l WHERE l.asin = c.asin AND l.state <> 'gone')) AS units_gone_at
+        AND NOT EXISTS (SELECT 1 FROM units l WHERE l.asin = c.asin AND l.state <> 'gone')) AS units_gone_at,
+       -- D67: our checks since this sighting that couldn't read the offers, when none since could (0 if one could)
+       (SELECT count(*) FROM checks k WHERE k.asin = c.asin AND k.checked_at >= c.swept_at AND NOT k.offers_ok
+        AND NOT EXISTS (SELECT 1 FROM checks o WHERE o.asin = c.asin AND o.checked_at >= c.swept_at
+                        AND o.offers_ok)) AS failed_since
 FROM c
 -- D39 (10-06): seeing has no rank limit here either (Clothing had 486 Like New 50%+ deals in a week, 22 within
 -- 50k). Tiers mirror TrackerConfig.tiers; the Clothing condition rule mirrors CENSUS_CONDS (D38),
@@ -264,7 +268,11 @@ SELECT s.asin, NULL::bigint AS offer_id, s.title, s.category, s.image, s.cond, s
        ((s.strict >= 0.40 AND s.ref_cents >= 10000) OR (s.strict >= 0.30 AND s.ref_cents >= 20000)) AS in_tiers,
        EXISTS (SELECT 1 FROM unlisted x WHERE x.asin = s.asin) AS held,  -- QA 10-12: the public feed drops these
        (SELECT max(v.gone_at) FROM units v WHERE v.asin = s.asin AND v.state = 'gone'
-        AND NOT EXISTS (SELECT 1 FROM units l WHERE l.asin = s.asin AND l.state <> 'gone')) AS units_gone_at
+        AND NOT EXISTS (SELECT 1 FROM units l WHERE l.asin = s.asin AND l.state <> 'gone')) AS units_gone_at,
+       -- D67: our checks since this sighting that couldn't read the offers, when none since could (0 if one could)
+       (SELECT count(*) FROM checks k WHERE k.asin = s.asin AND k.checked_at >= s.swept_at AND NOT k.offers_ok
+        AND NOT EXISTS (SELECT 1 FROM checks o WHERE o.asin = s.asin AND o.checked_at >= s.swept_at
+                        AND o.offers_ok)) AS failed_since
 FROM s
 -- D46: plus 50%+ from a $40 reference for the shelves page; the main feed keeps `in_tiers` rows only.
 WHERE ((s.strict >= 0.40 AND s.ref_cents >= 10000) OR (s.strict >= 0.30 AND s.ref_cents >= 20000)
@@ -376,14 +384,8 @@ CREATE TABLE IF NOT EXISTS delivery (
 );
 CREATE INDEX IF NOT EXISTS delivery_due ON delivery (deliver_at) WHERE status = 'queued';
 CREATE INDEX IF NOT EXISTS delivery_key ON delivery (subscriber_id, product_key);
--- Watchers per shelf: a shelf interest, or an aisle interest (front and aisle shelves only); active subscribers only.
-CREATE OR REPLACE VIEW shelf_watchers AS
-SELECT s.id AS shelf_id, count(DISTINCT i.subscriber_id) AS watching
-FROM shelf s
-JOIN interest i ON (i.kind = 'shelf' AND i.value = s.id) OR (i.kind = 'aisle' AND i.value = s.aisle AND s.role <> 'hidden')
-JOIN subscriber sub ON sub.id = i.subscriber_id AND NOT sub.paused
-WHERE EXISTS (SELECT 1 FROM endpoint e WHERE e.subscriber_id = sub.id AND e.disabled_at IS NULL)
-GROUP BY s.id;
+-- (Shelf watches and their shelf_watchers view were removed 10-15; alerts are on keywords: alerts-beta.md.)
+DROP VIEW IF EXISTS shelf_watchers;
 -- api-v1 (docs/handoffs/api-v1.md): a shelf's one-line description (NULL = the page skips the line).
 ALTER TABLE shelf ADD COLUMN IF NOT EXISTS description text;
 -- api-v1: one row per /d/ hit (the site's way out to Amazon). No IP, no cookie; referer_path has no query string.
@@ -399,6 +401,12 @@ CREATE TABLE IF NOT EXISTS page_view (
   day date NOT NULL, page text NOT NULL, variant text NOT NULL DEFAULT '', n int NOT NULL DEFAULT 0,
   PRIMARY KEY (day, page, variant)
 );
+-- D64: one row per deal page opened (a card now opens our deal page; its Amazon button is a `click` row whose
+-- referer_path is /deal/...). Which deal, the surface the card was on, the arm. No IP, no cookie, no id.
+CREATE TABLE IF NOT EXISTS deal_open (
+  id bigserial PRIMARY KEY, at timestamptz NOT NULL DEFAULT now(), asin text, surface text, variant text
+);
+CREATE INDEX IF NOT EXISTS deal_open_at ON deal_open (at);
 -- api-v1 per_week: product keys (parent ASIN, else ASIN) that newly qualified for the public selection (50%+ from
 -- a $40 reference) in the last 7 days: units we first saw, and feed/census rows Keepa priced, in that window.
 -- The API places each key on its shelf. Census keeps its Clothing condition rule (CENSUS_CONDS, D38).
@@ -422,6 +430,25 @@ CREATE TABLE IF NOT EXISTS rater_batch (
   sent int NOT NULL, loaded int NOT NULL, bad int NOT NULL, stop_reason text, request_id text,
   input_tokens int, output_tokens int, cache_read_tokens int, cache_write_tokens int, usd numeric(10, 4), error text
 );
+-- Keyword alerts (docs/handoffs/alerts-beta.md, rules k0.1). A subscriber is verified by their first confirm link.
+-- An interest is one alert: pending (not confirmed) -> watching (armed at armed_at) -> fired | expired | stopped.
+-- `source` is where it was set (search | deal | gone | sold): sign-ups by entry point, no other identifier.
+-- `criteria` holds paid filters later (min %, condition, price); unused for now.
+ALTER TABLE subscriber ADD COLUMN IF NOT EXISTS verified_at timestamptz;
+ALTER TABLE interest ADD COLUMN IF NOT EXISTS id bigserial;
+CREATE UNIQUE INDEX IF NOT EXISTS interest_id ON interest (id);
+ALTER TABLE interest ADD COLUMN IF NOT EXISTS state text NOT NULL DEFAULT 'watching';
+ALTER TABLE interest ADD COLUMN IF NOT EXISTS armed_at timestamptz;
+ALTER TABLE interest ADD COLUMN IF NOT EXISTS ended_at timestamptz;
+ALTER TABLE interest ADD COLUMN IF NOT EXISTS source text;
+ALTER TABLE interest ADD COLUMN IF NOT EXISTS criteria jsonb;
+ALTER TABLE delivery ADD COLUMN IF NOT EXISTS interest_id bigint;
+CREATE INDEX IF NOT EXISTS delivery_interest ON delivery (interest_id) WHERE interest_id IS NOT NULL;
+-- My alerts: what an alert caught but missed (the unit went before its send window closed) and what it sent.
+CREATE OR REPLACE VIEW alert_delivery AS
+SELECT d.subscriber_id, d.interest_id, d.status, d.deliver_at, d.sent_at, e.at, e.asin, w.title
+FROM delivery d JOIN deal_event e ON e.id = d.event_id JOIN watch w ON w.asin = e.asin
+WHERE d.interest_id IS NOT NULL AND d.status IN ('stale', 'sent');
 """
 
 

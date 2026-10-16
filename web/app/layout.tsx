@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { Footer, Header } from "@/components/Chrome";
-import { WatchProvider } from "@/components/Watch";
+import { DealSheet } from "@/components/DealSheet";
+import { AlertProvider } from "@/components/Alert";
 import { display, grade, mono, text } from "./fonts";
 import "./globals.css";
 
@@ -32,7 +33,7 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
         <link rel="preconnect" href="https://m.media-amazon.com" />
       </head>
       <body>
-        <WatchProvider>
+        <AlertProvider>
           <div className="shell">
             <a className="skip" href="#main">
               Skip to deals
@@ -43,7 +44,8 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
             </main>
             <Footer />
           </div>
-        </WatchProvider>
+          <DealSheet />
+        </AlertProvider>
       </body>
     </html>
   );
