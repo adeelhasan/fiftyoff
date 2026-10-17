@@ -9,6 +9,11 @@ it. When the window closes, units that went or got unlisted are marked stale (My
 the rest go out as one email. A one-shot tier's alert then ends (`fired`); if everything was missed, it stays
 armed. Each pass also ends alerts past their tier's lifetime (`expired`) and sends the expiry email.
 
+An alert only ever names a deal the site shows (user, 10-16): the site's own product endpoint is asked before a match
+is queued and again before it's sent (`Visible`). Hidden shelves, curation hides, price holds and seen-only cards
+never reach an email, and the email's link always opens a deal. A match the site hasn't listed yet (its snapshot is
+about a minute behind) waits up to `visible_wait_minutes`, then is skipped.
+
 Every number is a starting value to tune ([notify] and [tiers.*] in preflight.toml). Tiers are config only:
 a name with perks. Billing doesn't exist yet.
 """
@@ -18,7 +23,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Callable, Protocol
+from typing import Callable, Iterable, Protocol
 
 from . import mail
 from .search import matches, words
@@ -37,6 +42,8 @@ class NotifyConfig:
     min_appeal: int = 3            # skip what the rater scored below this (unrated products don't wait)
     repeat_hours: float = 72       # one message per product (parent ASIN) per subscriber in this window
     site: str = "https://beta.fiftyoff.app"
+    visible_wait_minutes: float = 10  # a match the site hasn't listed yet waits this long, then is skipped
+    site_api: str = "http://api:8000"  # the api container, asked with the site's Host header (compose network)
     poll_seconds: float = 60
     tiers: dict[str, dict] = field(default_factory=lambda: {
         "free": {"delay_minutes": 30, "max_interests": 1, "one_shot": True, "lifetime_days": 30}})
@@ -103,6 +110,13 @@ def decide(ev: dict, appeal: dict | None, now: datetime, cfg: NotifyConfig) -> t
     return "ready", {"product_key": product_key(ev), "score": appeal["score"] if appeal else None}
 
 
+Visible = Callable[[Iterable[str]], dict[str, bool | None]]  # ASIN -> on the site now? (None: couldn't tell)
+
+
+def everything_visible(asins: Iterable[str]) -> dict[str, bool | None]:
+    return {a: True for a in asins}
+
+
 def deliver_at(at: datetime, tier: str, cfg: NotifyConfig) -> datetime:
     return at + timedelta(minutes=perks(cfg, tier)["delay_minutes"])
 
@@ -124,8 +138,8 @@ class NotifyStore(Protocol):
     def armed_before(self, t: datetime) -> list[dict]: ...  # watching alerts armed before t (expiry candidates)
 
 
-def advance(store: NotifyStore, now: datetime, cfg: NotifyConfig) -> dict[str, int]:
-    """Decide open events and queue deliveries for the alerts they match."""
+def advance(store: NotifyStore, now: datetime, cfg: NotifyConfig, visible: Visible = everything_visible) -> dict[str, int]:
+    """Decide open events and queue deliveries for the alerts they match, if the site shows the deal."""
     events = store.open_events()
     if not events:
         return {}
@@ -148,6 +162,14 @@ def advance(store: NotifyStore, now: datetime, cfg: NotifyConfig) -> dict[str, i
                 at = windows.setdefault(s["interest_id"], deliver_at(ev["at"], s["tier"], cfg))
                 rows.append({"event_id": ev["id"], "subscriber_id": s["subscriber_id"], "endpoint_id": s["endpoint_id"],
                              "interest_id": s["interest_id"], "product_key": d["product_key"], "deliver_at": at})
+            if rows:
+                shown = visible([ev["asin"]]).get(ev["asin"])
+                if not shown:  # not on the site (yet, or at all): no email may name it
+                    waited = now - ev["at"] >= timedelta(minutes=cfg.visible_wait_minutes)
+                    status, d = ("skip", {**d, "why": "not on the site"}) if waited else ("waiting", d)
+                    store.set_event(ev["id"], status, {**d, "rules_v": RULES_VERSION})
+                    counts[status] = counts.get(status, 0) + 1
+                    continue
             told |= seen
             store.add_deliveries(rows)
             status = "queued" if rows else "no_watchers"
@@ -157,12 +179,17 @@ def advance(store: NotifyStore, now: datetime, cfg: NotifyConfig) -> dict[str, i
 
 
 def send_due(store: NotifyStore, send: mail.Sender, now: datetime, cfg: NotifyConfig, links: mail.Links,
-             log: Callable[[str], None] = print) -> int:
-    """Send what's due, one email per alert. A stopped or paused alert's deliveries are dropped; a unit that went
-    or got unlisted since is stale (missed). One-shot alerts end once something is sent."""
+             log: Callable[[str], None] = print, visible: Visible = everything_visible) -> int:
+    """Send what's due, one email per alert. A stopped or paused alert's deliveries are dropped; a unit that went,
+    got unlisted or left the site since is stale (missed). If the site can't be asked, the delivery waits for the
+    next pass. One-shot alerts end once something is sent."""
     due = store.due(now)
     dropped = [d["id"] for d in due if d["interest_state"] != "watching" or d.get("paused")]
-    stale = [d["id"] for d in due if d["id"] not in dropped and (d.get("state") == "gone" or d.get("unlisted"))]
+    shown = visible({d["asin"] for d in due if d["id"] not in dropped}) if due else {}
+    later = {d["id"] for d in due if d["id"] not in dropped and shown.get(d["asin"]) is None}
+    due = [d for d in due if d["id"] not in later]
+    stale = [d["id"] for d in due if d["id"] not in dropped
+             and (d.get("state") == "gone" or d.get("unlisted") or not shown.get(d["asin"]))]
     if dropped:
         store.mark(dropped, "dropped")
     if stale:

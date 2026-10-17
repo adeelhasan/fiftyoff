@@ -227,3 +227,47 @@ def test_parse_lines_checks_every_field():
     rows, bad = parse_lines([good, "P2\t11\taudio-tv\theadphones-earbuds\tx\tn\t-\twhy",
                              "P3\t5\taudio-tv\tno-such-shelf\tx\tn\t-\twhy"], "a0.3")
     assert [r[0] for r in rows] == ["P1"] and rows[0][7] == "headphones-earbuds" and len(bad) == 2
+
+
+def test_only_deals_the_site_shows_are_queued_and_sent():
+    """User, 10-16: a faucet alert emailed deals on a hidden shelf, and the link opened 'deal not found'."""
+    hidden = {"B000000001": False}
+    m = Mem([ev()], {}, [alert(1, 1, "dyson", tier="plus")])
+    assert notify.advance(m, NOW, CFG, lambda a: {x: hidden.get(x, True) for x in a}) == {"waiting": 1}
+    assert not m.deliveries and m.status[1] == "waiting"                 # the snapshot may just be behind
+    late = NOW + timedelta(minutes=CFG.visible_wait_minutes)
+    assert notify.advance(m, late, CFG, lambda a: {x: False for x in a}) == {"skip": 1}
+    assert not m.deliveries                                              # never listed: no email names it
+
+
+def test_a_deal_that_left_the_site_before_sending_is_missed_and_an_unreachable_site_waits():
+    m = Mem([ev()], {}, [alert(1, 1, "dyson")])
+    notify.advance(m, NOW, CFG, lambda a: {x: True for x in a})
+    sent, send = outbox()
+    later = NOW + timedelta(hours=1)
+    assert notify.send_due(m, send, later, CFG, LINKS, visible=lambda a: {x: None for x in a}) == 0
+    assert m.deliveries[0]["status"] == "queued"                         # couldn't ask: try next pass
+    assert notify.send_due(m, send, later, CFG, LINKS, visible=lambda a: {x: False for x in a}) == 0
+    assert m.deliveries[0]["status"] == "stale" and m.alerts[1]["state"] == "watching" and not sent
+
+
+def test_site_visible_asks_the_product_endpoint_with_the_site_host(monkeypatch):
+    from fiftyoff import notifier
+    seen = []
+
+    class R:
+        def __init__(self, body): self.body = body
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self, *a): return self.body
+
+    def fake(req, timeout):
+        seen.append((req.full_url, req.get_header("Host")))
+        if req.full_url.endswith("B0DOWN0001"):
+            raise OSError("down")
+        return R(b'{"deal": {"id": "B0LIVE0001"}}' if req.full_url.endswith("B0LIVE0001") else b'{"deal": null}')
+
+    monkeypatch.setattr(notifier.urllib.request, "urlopen", fake)
+    check = notifier.site_visible(notify.NotifyConfig(site="https://beta.fiftyoff.app", site_api="http://api:8000"))
+    assert check(["B0LIVE0001", "B0HIDE0001", "B0DOWN0001"]) == {"B0LIVE0001": True, "B0HIDE0001": False, "B0DOWN0001": None}
+    assert seen[0][0] == "http://api:8000/api/v1/product/B0LIVE0001" and seen[0][1].lower() == "beta.fiftyoff.app"

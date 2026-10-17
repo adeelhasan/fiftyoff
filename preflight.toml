@@ -150,6 +150,8 @@ fresh_hours = 6                 # a new unit must be this fresh by Keepa's datin
 min_appeal = 3                  # skip what the rater scored below this (unrated products don't wait)
 repeat_hours = 72               # one message per product per subscriber in this window
 site = "https://beta.fiftyoff.app"   # links in emails (deal links go through /d/{slug}?s=email)
+site_api = "http://api:8000"    # asked whether the site shows a deal before it's queued and before it's sent (10-16)
+visible_wait_minutes = 10       # a match the site hasn't listed yet (snapshot lag) waits this long, then is skipped
 poll_seconds = 60
 
 # Tiers are config only: a name with perks. Billing doesn't exist; switch a subscriber with `notify.py tier`.

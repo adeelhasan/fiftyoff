@@ -9,10 +9,13 @@ No model and no Keepa call here: the notifier reads what the tracker and the rat
 
 from __future__ import annotations
 
+import json
 import os
 import time
+import urllib.request
 from datetime import datetime, timezone
-from typing import Callable
+from typing import Callable, Iterable
+from urllib.parse import urlsplit
 
 import psycopg
 from psycopg.rows import dict_row
@@ -117,6 +120,25 @@ class PgNotify:
                           "EXCLUDED.value", (Json(value),))
 
 
+def site_visible(cfg: notify.NotifyConfig, timeout: float = 5) -> notify.Visible:
+    """Ask the site's own product endpoint (the api container, with the site's Host header) whether each ASIN is a
+    live deal the site shows. True / False, or None when the site couldn't be asked (the caller waits and retries)."""
+    host = urlsplit(cfg.site).netloc
+
+    def check(asins: Iterable[str]) -> dict[str, bool | None]:
+        out: dict[str, bool | None] = {}
+        for a in asins:
+            req = urllib.request.Request(f"{cfg.site_api.rstrip('/')}/api/v1/product/{a}",
+                                         headers={"Host": host, "Accept": "application/json"})
+            try:
+                with urllib.request.urlopen(req, timeout=timeout) as r:
+                    out[a] = bool(json.load(r).get("deal"))
+            except Exception:  # noqa: BLE001 — warming up (503), down, or a network blip: unknown, not "hidden"
+                out[a] = None
+        return out
+    return check
+
+
 def links_from_env(cfg: notify.NotifyConfig, env=os.environ) -> mail.Links:
     key = env.get("SECRET_KEY") or ""
     if not key:
@@ -127,12 +149,13 @@ def links_from_env(cfg: notify.NotifyConfig, env=os.environ) -> mail.Links:
 # ---------------------------------------------------------------- loop
 
 def run(store: PgNotify, send: mail.Sender, cfg: notify.NotifyConfig, links: mail.Links, once: bool = False,
-        log: Callable[[str], None] = print) -> None:
+        log: Callable[[str], None] = print, visible: notify.Visible | None = None) -> None:
+    visible = visible or site_visible(cfg)
     while True:
         now = datetime.now(timezone.utc)
         try:
-            counts = notify.advance(store, now, cfg)
-            sent = notify.send_due(store, send, now, cfg, links, log)
+            counts = notify.advance(store, now, cfg, visible)
+            sent = notify.send_due(store, send, now, cfg, links, log, visible)
             expired = notify.expire(store, send, now, cfg, links, log)
             if counts or sent or expired:
                 log(f"[{now.isoformat(timespec='seconds')}] events {counts or '-'}, emails sent {sent}, expired {expired}")

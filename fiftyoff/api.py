@@ -104,7 +104,7 @@ def stale_sighting(r: dict) -> bool:
     """Beta QA 10-12: a seen-only row the public must not show. Either the ASIN is held for review (a hold removes it
     from the live views, and its sweep row used to come back as a seen card), or every unit we track for it went gone
     at or after this sighting (our own check beats an older Keepa sighting), or (D67) our checks since the sighting
-    keep failing to read its offers: Amazon has often merged the ASIN into another listing (seen 10-15), so
+    keep failing to read its offers: Amazon has often merged the ASIN into another listing (D67, 10-15), so
     the unit can't be confirmed and the link may land on a page without it."""
     if r.get("source") is None:
         return False
